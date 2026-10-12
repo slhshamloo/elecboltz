@@ -83,8 +83,8 @@ class Conductivity:
             scattering_rate: Callable | Sequence | Real | None = None,
             scattering_kernel: ScatteringKernel | None = None,
             frequency: Real = 0.0, correct_curvature: bool = True,
-            quadrature_order: int = 2, Bamp: Real = None,
-            Btheta: Real = None, Bphi: Real = None, **kwargs):
+            quadrature_order: int = 2, Bamp: Real | None = None,
+            Btheta: Real | None = None, Bphi: Real | None = None, **kwargs):
         self.correct_curvature = correct_curvature
         self.quadrature_order = quadrature_order
         # avoid triggering setattr in the constructor
@@ -141,7 +141,8 @@ class Conductivity:
             super().__setattr__(name, value)
 
     def set_field(self, field: Sequence[Real] = np.zeros(3),
-                  Bamp: Real = None, Btheta: Real = None, Bphi: Real = None):
+                  Bamp: Real | None = None, Btheta: Real | None = None,
+                  Bphi: Real | None = None):
         """Set the magnetic field.
 
         Note that you can both provide the field in Cartesian

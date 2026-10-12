@@ -381,6 +381,14 @@ class BandStructure:
     def periodic_projector(self):
         return self.surfaces[0.0].periodic_projector if self.surfaces else None
 
+    @property
+    def symmetry_projector(self):
+        """
+        Project quantities on the full surface onto the irreducible wedge.
+        """
+        return (self.surfaces[0.0].symmetry_projector
+                if self.surfaces else None)
+
     def _parse_dispersion(self):
         """
         Parse the dispersion relation and extract the necessary

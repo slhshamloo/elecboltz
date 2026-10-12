@@ -27,11 +27,22 @@ class IsoEnergySurface:
     periodic_projector : scipy.sparse.csr_array
         Projects quantities into the periodic k-space, where points that
         are periodic images of each other are mapped to the same point.
+    symmetry_projector : scipy.sparse.csr_array
+        Projects scalar quantities from the symmetrized surface onto the
+        irreducible wedge. Each column corresponds to a point on this
+        surface and contains one nonzero entry for its equivalent wedge
+        point.
+    max_irreducible_index : int
+        The maximum index of the irreducible wedge points. The indices
+        of the points on the irreducible wedge range from 0 to this
+        value, inclusive.
     """
     def __init__(self, kpoints: np.ndarray, kfaces: np.ndarray):
         self.kpoints = kpoints
         self.kfaces = kfaces
         self.periodic_projector = None
+        self.symmetry_projector = None
+        self.max_irreducible_index = -1
         self._compute_adaptive_tolerance()
         self.clean()
 
@@ -52,6 +63,7 @@ class IsoEnergySurface:
         # Cut down to the irreducible wedge
         for plane_normal in symmetry.wedge_planes:
             self._clip(plane_normal)
+        wedge_kpoints = self.kpoints.copy()
         # Apply the symmetry operations to generate the full surface
         new_kpoints = []
         new_kfaces = []
@@ -68,6 +80,9 @@ class IsoEnergySurface:
         self.kpoints = np.vstack(new_kpoints)
         self.kfaces = np.vstack(new_kfaces)
         self.clean()
+
+        self.max_irreducible_index = len(wedge_kpoints) - 1
+        self._build_symmetry_projector(wedge_kpoints, symmetry.matrices)
 
     def sort_and_reindex(self, sort_axis):
         new_order = np.argsort(self.kpoints[:, sort_axis])
@@ -178,6 +193,28 @@ class IsoEnergySurface:
                 (reindex_map, np.arange(len(self.kpoints)))),
                 shape=(np.count_nonzero(unique_mask), len(self.kpoints)))
 
+    def _build_symmetry_projector(self, wedge_kpoints, matrices):
+        """Build the projector from the full mesh to the irreducible wedge."""
+        wedge_tree = KDTree(wedge_kpoints)
+        nearest_distance = np.full(len(self.kpoints), np.inf)
+        wedge_indices = np.full(len(self.kpoints), -1, dtype=int)
+
+        for matrix in matrices:
+            distances, indices = wedge_tree.query(self.kpoints @ matrix)
+            improve = distances < nearest_distance
+            nearest_distance[improve] = distances[improve]
+            wedge_indices[improve] = indices[improve]
+
+        if np.any(nearest_distance > self.tol_snap):
+            raise RuntimeError(
+                "Could not map every symmetrized point to the irreducible "
+                "wedge.")
+
+        self.symmetry_projector = scipy.sparse.csr_array(
+            (np.ones(len(self.kpoints)),
+             (wedge_indices, np.arange(len(self.kpoints)))),
+            shape=(len(wedge_kpoints), len(self.kpoints)))
+
     def _clip(self, plane_normal):
         distance = np.dot(self.kpoints, plane_normal)
         self._snap_to_plane(distance, plane_normal)
@@ -208,13 +245,8 @@ class IsoEnergySurface:
         distance[snap_mask] = 0.0
 
     def _get_intersections(self, distance):
-        edges = np.stack((self.kfaces, np.roll(self.kfaces, -1, axis=1)),
-                         axis=-1)
-        non_directed_edges = np.sort(edges, axis=-1)
         is_point_inside = distance >= 0
-
-        unique_edges, unique_edge_index = np.unique(
-            non_directed_edges.reshape(-1, 2), axis=0, return_inverse=True)
+        unique_edges, unique_edge_index = self._get_unique_edges()
         # If one vertex is inside and the other is outside
         # then the edge crosses the plane
         is_edge_vertex_inside = is_point_inside[unique_edges]
@@ -238,6 +270,15 @@ class IsoEnergySurface:
         intersections = crossing_index[unique_edge_index].reshape(
             self.kfaces.shape)
         return intersections, intersection_points
+
+    def _get_unique_edges(self):
+        edges = np.stack((self.kfaces, np.roll(self.kfaces, -1, axis=1)),
+                         axis=-1)
+        non_directed_edges = np.sort(edges, axis=-1).reshape(-1, 2)
+
+        unique_edges, unique_edge_index = np.unique(
+            non_directed_edges, axis=0, return_inverse=True)
+        return unique_edges, unique_edge_index
 
     def _cut_faces(self, intersections, is_vertex_inside, inside_vertex_count):
         new_faces = []

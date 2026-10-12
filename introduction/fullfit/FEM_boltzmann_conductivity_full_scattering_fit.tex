@@ -1,0 +1,173 @@
+\documentclass[12pt]{article}
+\usepackage{amsmath,amssymb,bbold,bm,csquotes,empheq,graphicx,hyperref,mathtools,siunitx,subcaption,upgreek,xcolor}
+\usepackage[a4paper, margin=1in]{geometry}
+\usepackage[italicdiff]{physics}
+\usepackage[justification=centering]{caption}
+\usepackage{subcaption}
+\usepackage[section]{placeins}
+
+\hypersetup{colorlinks=true, urlcolor=cyan}
+\newcommand{\ddfrac}[2]{{\displaystyle\frac{\displaystyle #1}{\displaystyle #2}}}
+
+\title{Fitting the Full Shape of the Scattering Rate in the Relaxation Time Approximation of Boltzmann Transport Using a Finite Element Method}
+\author{Saleh Shamloo}
+
+\begin{document}
+\maketitle
+\section{Context}
+We have been using the Boltzmann transport equation in the relaxation time approximation to analyze
+the transport behavior of various quantum materials, often with great success.
+However, this analysis involves a lot of guesswork and manual testing when it comes to implementing
+an appropriate mathematical form for the scattering rate. This means there is always some uncertainty
+when we run into contradictions with the analysis. We start to think
+"Maybe we just have not found a smart enough ansatz." Therefore, it is hard to be certain
+when we have actually ran into a limitation of the method itself
+(for example, a breakdown of the relaxation time approximation).
+
+To extract the scattering rate from experimental data, we rely on functions that respect the symmetries
+of the lattice and that we can flexibly tune it terms of their ``intensity'' and ``spread''.
+For example, for Nd-LSCO, we have
+\begin{gather}
+    1/\tau_{\vb{k}} = 1/\tau_{\text{isotropic}} + 1/\tau_{\text{anisotropic}}, \\
+    1/\tau_{\text{anisotropic}} = \Gamma_{\vb{k}}\abs{\cos(2\vb{\phi})}^{\nu},
+\end{gather}
+where $\phi$ is the in-plane angle and $\Gamma_{\vb{k}}$ and $\nu$ can set the aforementioned
+intensity and spread of peaks around the antinodal points on the Fermi surface
+(that is, the points $(\pi,0)$, $(0,\pi)$, $(-\pi,0)$, $(0,-\pi)$).
+This provides a flexible, easy-to-interpret mathematical form for the scattering rate.
+After this, our job is to fit the free parameters of this model to the experiment.
+This is usually an Angle-Dependent Magnetoresistance (ADMR) measurement that can
+sufficiently constrain the parameters of the fit.
+Next, we check the consistency with other experiments, and if we indeed find consistency,
+we know that we have successfully found a fundamental property of the scattering of the system.
+This method is based on a physical understanding of the system, and has strong explanatory power
+due to the limited number of parameters involved.
+
+However, what happens if we fail to find \emph{any} suitable form for the scattering rate that can self-consistently explain multiple experiments (e.g. the ADMR and the Hall effect)? How can we be sure that a solution does not exist at all, and it is not that we have not searched well enough? The only way to know for sure is to extract the full shape of the scattering rate from the data, without any imposed ansatz. This is the goal of this project. \textcolor{red}{TODO: show examples with figures of Nd-LSCO and LSCO data.}
+
+\section{Boltzmann Transport Solved with an FEM}
+In a previous report, we have fully derived how one can solve the Boltzmann transport equation using a Finite Element Method (FEM). I will just be using the results here. You can consult the other report for computational details. 
+
+The central equation for calculating the conductivity is
+\begin{equation}
+    \sigma_{ab} = \frac{2e^2}{(2\pi)^d\hbar} \sum_{ij} \qty[
+    \qty(\sum_k M_{ik} (\hat{v}_a)^k) \qty(A_{ij})^{-1} \qty(\sum_k M_{jk} \qty(\hat{v}_b)^k)].
+\end{equation}
+where the matrix $M$ is the ``overlap matrix'' coming from the chosen FEM basis and the matrix $A$ is
+\begin{align}
+A_{ij} &= \begin{aligned}[t]
+    &\int\dd{\vb{k}} \qty(-i\omega + \frac{1}{\tau(\vb{k})})
+        \frac{\phi_i(\vb{k})\phi_j(\vb{k})}{v(\vb{k})} \\
+    &-\int\dd{\vb{k}} \phi_i(\vb{k})\frac{e\qty(\vu{v}(\vb{k})\cross\vb{B})}{\hbar}
+        \vdot\grad_{\vb{k}}\phi_j(\vb{k}) \\
+    &- \int\dd{\vb{k}} \int\dd{\vb{k'}}
+    \phi_i(\vb{k}) \frac{C(\vb{k},\vb{k'})}{v(\vb{k})} \phi_j(\vb{k'})
+\end{aligned} \\
+&\equiv \Gamma_{ij} - \frac{eB}{\hbar} \qty(D_{\vu{v}\cross\vu{B}})_{ij} + S_{ij}.
+\end{align}
+where $1/\tau(\vb{k})$ is the scattering rate, $C(\vb{k}, \vb{k'})$ is the scattering kernel,
+$\omega$ is the oscillation frequency of the externally applied electromagnetic fields,
+and the $\phi$ functions are FEM basis functions.
+In the relaxation time approximation, we neglect the last term
+(involving the explicit use of the full scattering kernel).
+
+We assume a piecewise linear basis functions on a triangulated Fermi surface.
+If we define $\alpha_{ijk}$ as the tensor equal to the jacobian converting area of the triangle containing the vertices $i$, $j$, and $k$,
+and set it equal to 0 when the mesh does not contain a triangle between these vertices,
+then we define the area matrix $\alpha$ as
+\begin{equation}
+    \alpha_{ij} = \sum_{(i,j,k) \in T_i \cap T_j} \alpha_{ijk},
+\end{equation}
+where $T_i$ is the triangle containing the vertex $i$.
+When $i=j$, this is just a sum over the triangles that contain this one node with index $i=j$.
+Next, we define the local derivative matrix $\vb{d}_{ij}$ as
+\begin{equation}
+    \vb{d}_{ij} = \sum_{(i,j,k) \in T_i \cap T_j} \text{sgn}(i,j,k)(\vb{k}_i - \vb{k}_k),
+\end{equation}
+Where the $\text{sgn}(i,j,k)$ function comes from the sign needed for the orientation of the triangle,
+such that the normals point outward.
+Finally, we define the inverse scattering length vector $\gamma$ as
+\begin{equation}
+    \gamma^k = -\frac{i\omega}{v_k} + \frac{1}{v_k\tau_k},
+\end{equation}
+then the different matrices can be expressed as
+\begin{gather}
+    M_{ij} = \frac{\alpha_{ij}}{24}\delta_{ij} + \frac{\alpha_{ij}}{24}, \\
+    \Gamma_{ij} = \frac{1}{60}\qty(
+        \sum_k\alpha_{ik}\gamma^k\delta_{ij}
+        + \alpha_{ij}\qty(\gamma^i+\gamma^j) + \sum_k\frac{\alpha_{ijk}\gamma^k}{2}) \\
+    (D_{\vu{v}\cross\vu{B}})_{ij} = \frac{1}{6}\vu{B}\vdot\vb{d}_{ij}.
+\end{gather}
+Note that, compared to the report these equations are taken from, I have removed the unneeded neighboring node Kronecker deltas (like $\delta_{\expval{ij}}$)
+and merged the vector $\alpha_i$ into the matrix $\alpha_{ij}$.
+In order to avoid confusion, I will not be using the appropriate subscript/superscript (covariant/constravariant) position for the indices in the rest of this document.
+They are not needed for the mathematics here.
+
+\subsection{The Optimization Problem}
+From here, in principle, we have everything we need to fit the scattering rate at every node on the Fermi surface using data from an experiment (usually ADMR). However, without the Jacobian, it would be very computationally intensive and difficult to solve this optimization problem. Since we formulated the problem in a linear-algebraic form with our Finite Element Method, it is possible for us to calculate the Jacobian explicitly.
+
+From experiments, the actual data we collect is not the conductivity $\sigma$, but its inverse $\rho$. In pure linear algebra notation,
+\begin{equation}
+    \rho = \frac{(2\pi)^d\hbar}{2e^2}\qty(\hat{V}^TA^{-1}\hat{V})^{-1}
+\end{equation}
+where $\hat{V}$ is a matrix containing all the three $M\hat{v}$ vectors on three columns next to each other. 
+\begin{equation}
+    \hat{V} = \mqty(\vert&\vert&\vert\\M\hat{v}_x&M\hat{v}_y&M\hat{v}_z\\\vert&\vert&\vert)
+\end{equation}
+From here, to get the full shape of the scattering rate, we can fit it at every point discretized on the Fermi surface. To be more exact, we have the components of the vector $\gamma_k$ (or $1/\tau_k$) as the parameters of the model, and we fit them to the measured $rho$ under different conditions (for example, for ADMR, we fit to the $\rho_{zz}$ calculated at different $\theta$ and $\phi$ spherical angles of the magnetic field with the sample).
+
+The challenge with this optimization problem is the computational cost of fitting thousands of parameters at the same time, with a relatively high cost for every iteration of the optimization procedure. However, we can alleviate that and make the optimization problem much more workable by explicitly calculating the gradient of the loss. To calculate the gradient of any type of loss function, it is sufficient to have the derivative of our output values with respect to the fitting parameters.
+
+First, remember that
+\begin{equation}
+     \sigma = \frac{2e^2}{(2\pi)^d\hbar}\qty(\hat{V}^TA^{-1}\hat{V})
+\end{equation}
+Then, taking the derivative of $\rho=\sigma^{-1}$ with respect to each optimization parameter $\gamma_p$, we get
+\begin{equation}
+    \pdv{\rho}{\gamma_p} = -\sigma^{-1}\pdv{\sigma}{\gamma_p}\sigma^{-1} = -\rho\pdv{\sigma}{\gamma_p}\rho,
+\end{equation}
+with
+\begin{equation}
+\pdv{\sigma}{\gamma_p} = \frac{2e^2}{(2\pi)^d\hbar}\qty(\hat{V}^T\pdv{A^{-1}}{\gamma_p}\hat{V})
+= -\frac{2e^2}{(2\pi)^d\hbar}\qty(\hat{V}^TA^{-1}\pdv{A}{\gamma_p}A^{-1}\hat{V})
+\label{eq:inv_sigma}
+\end{equation}
+Since only the $\Gamma$ matrix in $A$ depends on $\gamma$,
+\begin{equation}
+    \pdv{A_{ij}}{\gamma_p} = \pdv{\Gamma_{ij}}{\gamma_p}
+    = \frac{1}{60}\qty(\alpha_{ip}\delta_{ij}
+    +\alpha_{ij}\qty(\delta_{ip}+\delta_{jp})
+    +\frac{\alpha_{ijp}}{2}).
+    \label{eq:gamma_dv}
+\end{equation}
+
+Keep in mind that in equation \eqref{eq:inv_sigma}, if we do the correct order of operations, there is no need for many matrix inverses for every different $\gamma_p$ parameter. The only two big (but sparse) inverses needed are
+\begin{empheq}[left=\empheqlbrace]{align}
+    X &\coloneq A^{-1}\hat{V}, \\
+    Y &\coloneq \qty(A^{-1})^T\hat{V},
+\end{empheq}
+then the expression for the Jacobian becomes
+\begin{equation}
+    \pdv{\rho}{\gamma_p} = \frac{2e^2}{(2\pi)^d\hbar}
+    \rho\qty(\hat{Y}^T\pdv{\Gamma}{\gamma_p}\hat{X})\rho
+\end{equation}
+with the derivative $\dv*{\Gamma}{\gamma_p}$ calculated in \eqref{eq:gamma_dv}. When doing the actual calculations, we are not solving the linear system $A^{-1}V$ for every column in $V$, as we use a factorization of $A$. So, we do not need to redo an inverse for $\qty(A^{-1})^T$ either, and it is only a transpose operation followed by another matrix multiplication.
+
+Practically, we do not want to calculate $\pdv*{\Gamma}{\gamma_p}$ separately and then multiply by
+$X$ and $Y^T$, as that would involve making a 3-tensor mostly filled with diagonal terms.
+The $\alpha_{ijp}$ term, which is the only term forcing a 3-tensor instead of a matrix,
+only involves contributions involving neighboring nodes of $p$. Therefore, expanding the matrix
+multiplication should give us a more efficient construction of the $Y^T(\pdv*{\Gamma}{\gamma_p}X)$ term,
+based on neighboring nodes of $p$ instead of tensor multiplication.
+\begin{equation}
+    \qty(Y^T\pdv{\Gamma}{\gamma_p}X)_{ab} = \frac{1}{60}\qty(
+        \sum_i\alpha_{ip}Y_{ia}X_{ib}
+        + Y_{pa}\sum_j\alpha_{pj}X_{jb}
+        + X_{pb}\sum_i\alpha_{ip}Y_{ia}
+        + \sum_{i,j}\frac{\alpha_{ijp}}{2}Y_{ia}X_{jb})
+\end{equation}
+Since $\alpha_{ijp}$ is only nonzero when $i$, $j$, and $p$ all lie on the same triangle,
+the last term is only a sum over the mesh triangles that contain the node $p$.
+This can be separately handled efficiently by a few sums over the triangle indices list.
+The rest of the terms are simple matrix multiplications.
+\end{document}

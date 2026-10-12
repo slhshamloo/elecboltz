@@ -8,6 +8,9 @@ temp/
 !introduction/**/*.pdf
 !introduction/**/*.png
 
+# VS Code
+.vscode/
+
 # data
 data/
 fits/

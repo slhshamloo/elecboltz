@@ -4,7 +4,9 @@ temp/
 
 # figures
 **/*.pdf
-!introduction/document/**/*.pdf
+**/*.png
+!introduction/**/*.pdf
+!introduction/**/*.png
 
 # data
 data/
@@ -146,4 +148,3 @@ venv.bak/
 
 # Cython debug symbols
 cython_debug/
-

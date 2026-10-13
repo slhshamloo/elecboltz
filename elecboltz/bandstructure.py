@@ -172,27 +172,6 @@ class BandStructure:
         # re-parse the dispersion relation to restore the full functions
         self._parse_dispersion()
 
-    def get_surface(self, energy: float = 0.0):
-        """Get the discretized iso energy surface at the given
-        energy level.
-        
-        Generates the discretized surface if it doesn't already exist.
-        Takes into account the floating-point tolerance ``tol`` when
-        determining if a surface at the given energy level has already been
-        discretized.
-        
-        Parameters
-        ----------
-        energy
-            The difference of the energy level of the discretized
-            surface from the chemical potential. The default is 0.0,
-            which corresponds to the Fermi surface.
-        """
-        for energy_level in self.surfaces:
-            if energy_level - energy < self.tol:
-                return self.surfaces[energy_level]
-        return self.discretize(energy)
-
     def discretize(self, energy: float = 0.0):
         """Discretize the iso-energy surface at the given energy level.
 
@@ -383,9 +362,6 @@ class BandStructure:
 
     @property
     def symmetry_projector(self):
-        """
-        Project quantities on the full surface onto the irreducible wedge.
-        """
         return (self.surfaces[0.0].symmetry_projector
                 if self.surfaces else None)
 

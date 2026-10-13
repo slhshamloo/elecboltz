@@ -1,6 +1,6 @@
 from .bandstructure import BandStructure
-from .kernel import ScatteringKernel, CustomKernel, SumKernel
-from .integrate import quad_points, quad_weights
+from .kernel import ScatteringKernel
+from .elements import FiniteElements
 
 import numpy as np
 import scipy.sparse
@@ -8,10 +8,9 @@ import scipy.sparse
 from typing import Callable
 from collections.abc import Sequence
 from numbers import Real
-from  numpy.typing import NDArray
+from numpy.typing import NDArray
 
-from scipy.constants import e, hbar, angstrom
-THz = 1e12
+from scipy.constants import e, hbar
 
 
 class Conductivity:
@@ -95,30 +94,15 @@ class Conductivity:
         self._field_direction = None
         self.set_field(field, Bamp, Btheta, Bphi)
         self.sigma = np.zeros((3, 3))
-        self._velocities = None
-        self._vmags = None
-        self._vhat_projections = None
-        self._quadrature_points = None
-        self._jacobians = None
-        self._jacobian_sums = None
-        self._overlap_matrix = None
-        self._derivatives = None
-        self._fem_to_kernel = None
-        self._scattering_invlen = None
-        self._in_scattering_matrix = None
-        self._out_scattering = None
-        self._derivative_term = None
-        self._differential_operator = None
-        self._are_elements_saved = False
-        self._is_scattering_saved = False
+        self._finite_elements = {}
 
     def __setattr__(self, name, value):
         if name == 'band':
-            self.erase_memory()
+            self.erase_cache()
             super().__setattr__(name, value)
         if name in ['frequency', 'scattering_rate', 'scattering_kernel']:
-            self.erase_memory(elements=False, scattering=True,
-                              derivative=False)
+            self.erase_cache(elements=False, scattering=True,
+                             derivative=False)
             if name == 'scattering_rate' and isinstance(value, Sequence):
                 if len(self.band.kpoints) != len(value):
                     raise ValueError(
@@ -127,7 +111,7 @@ class Conductivity:
                 value = np.array(value)
             super().__setattr__(name, value)
         if name in ['field', 'Bamp', 'Btheta', 'Bphi']:
-            self.erase_memory(elements=False, scattering=False,
+            self.erase_cache(elements=False, scattering=False,
                               derivative=True)
             super().__setattr__(name, value)
             if name == 'field':
@@ -181,15 +165,17 @@ class Conductivity:
             new_direction = np.zeros(3)
         if self._field_direction is not None:
             if np.all(self._field_direction == new_direction):
-                if self._derivative_term is not None:
-                    self._derivative_term *= \
-                        new_magnitude / self._field_magnitude
-                if self._differential_operator is not None:
-                    self._differential_operator = \
-                        self._out_scattering - e/hbar*self._derivative_term
+                for element in self._finite_elements.values():
+                    if element.derivative_term is not None:
+                        element.derivative_term *= \
+                            new_magnitude / self._field_magnitude
+                    if element.differential_operator is not None:
+                        element.differential_operator = (
+                            element.out_scattering
+                            - e/hbar*element.derivative_term)
             else:
-                self.erase_memory(elements=False, scattering=False,
-                                  derivative=True)
+                self.erase_cache(
+                    elements=False, scattering=False, derivative=True)
         self._field_magnitude = new_magnitude
         self._field_direction = new_direction
         if Bamp is None:
@@ -220,10 +206,10 @@ class Conductivity:
         NDArray or float
             The conductivity tensor component(s) as an i by j matrix.
         """
-        if not self._are_elements_saved:
-            self._build_elements()
-        if self._differential_operator is None:
-            self._build_differential_operator()
+        if 0.0 not in self._finite_elements:
+            self._build_finite_elements(0.0)
+        if not self._finite_elements[0.0].is_scattering_saved:
+            self._finite_elements[0.0]._build_differential_operator()
         
         i, j = self._get_calculation_indices(i, j)
         # (A^{-1})^{ij} (v_b)_j
@@ -231,7 +217,8 @@ class Conductivity:
         if len(self._linear_solution.shape) == 1:
             self._linear_solution = self._linear_solution[:, None]
         # (v_a)_i (A^{-1} v_b)^i
-        sigma_result = self._vhat_projections[:, i].T @ self._linear_solution
+        sigma_result = (self._finite_elements[0.0].vhat_projections[:, i].T
+                        @ self._linear_solution)
         sigma_result *= e**2 / (4 * np.pi**3 * hbar) / self.band.bz_ratio
         if self.frequency == 0.0:
             sigma_result = sigma_result.real
@@ -241,8 +228,8 @@ class Conductivity:
                 self.sigma[row, col] = sigma_result[idx_row, idx_col]
         return sigma_result
 
-    def erase_memory(self, elements: bool = True, scattering: bool = True,
-                     derivative: bool = True):
+    def erase_cache(self, elements: bool = True, scattering: bool = True,
+                    derivative: bool = True):
         """Erase saved calculations to free memory.
 
         This class saves already calculated values for the FEM elements
@@ -262,48 +249,40 @@ class Conductivity:
             If True, erase the derivative term.
         """
         if elements:
-            self._velocities = None
-            self._vmags = None
-            self._quadrature_points = None
-            self._jacobians = None
-            self._jacobian_sums = None
-            self._overlap_matrix = None
-            self._derivatives = None
-            self._vhat_projections = None
-            self._are_elements_saved = False
+            self._finite_elements = {}
         if scattering:
-            self._fem_to_kernel = None
-            self._scattering_invlen = None
-            self._in_scattering_matrix = None
-            self._out_scattering = None
-            self._is_scattering_saved = False
+            for element in self._finite_elements.values():
+                element.erase_cache()
         if derivative:
-            self._derivative_term = None
-        self._differential_operator = None
+            for element in self._finite_elements.values():
+                element.derivative_term = None
+                element.differential_operator = None
         self._factorization = None
         self._linear_solution = None
     
     def _solve(self, j):
+        elements = self._finite_elements[0.0] # zero temperature placeholder
         if self.scattering_kernel is None:
             self._factorization = scipy.sparse.linalg.splu(
-                self._differential_operator)
-            return self._factorization.solve(self._vhat_projections[:, j])
+                elements.differential_operator)
+            return self._factorization.solve(
+                elements.vhat_projections[:, j])
         else:
             # S_ij = C_ij / |v|_i, therefore we scale one of the U or V
             # matrices by the velocity magnitude to include the 1/|v|
             # factor in the transformed, full matrix
-            U = self._fem_to_kernel.conj().T / self._vmags[:, None]
-            V = self._fem_to_kernel
+            U = elements.fem_to_kernel.conj().T / elements.vmags[:, None]
+            V = elements.fem_to_kernel
             # A_periodic = P A_0 P^dagger + P U C V P^dagger
             if self.band.periodic:
                 U = self.band.periodic_projector @ U
                 V = V @ self.band.periodic_projector.T
             self._factorization = scipy.sparse.linalg.splu(
-                self._differential_operator)
+                elements.differential_operator)
             # A = A_0 + U^dagger S U
             return solve_sparse_plus_lowrank(
-                self._differential_operator, self._in_scattering_matrix,
-                U, V, self._vhat_projections[:, j],
+                elements.differential_operator, elements.in_scattering_matrix,
+                U, V, elements.vhat_projections[:, j],
                 sparse_solver = lambda _, b: self._factorization.solve(b))
 
     def _get_calculation_indices(self, i, j):
@@ -317,247 +296,17 @@ class Conductivity:
             j = [j]
         return i, j
 
-    def _build_elements(self):
-        """
-        Build the arrays corresponding to the discretization of the
-        band structure.
-        """
-        self._velocities = np.column_stack(self.band.velocity_func(
-            self.band.kpoints[:, 0], self.band.kpoints[:, 1],
-            self.band.kpoints[:, 2]))
-        self._vmags = np.linalg.norm(self._velocities, axis=1)
-        vhats = self._velocities / self._vmags[:, None]
-
-        triangle_points = self.band.kpoints[self.band.kfaces] / angstrom
-        if self.correct_curvature:
-            triangle_points = self.band._curvature_correct_points(
-                triangle_points, vhats[self.band.kfaces])
-        if self.scattering_kernel is not None:
-            self._quadrature_points = \
-                quad_points[self.quadrature_order] @ triangle_points
-    
-        self._calculate_jacobian_sums(triangle_points)
-        self._calculate_derivative_sums(triangle_points)
-        self._calculate_velocity_projections(vhats)
-        self._are_elements_saved = True
-
-    def _calculate_jacobian_sums(self, triangle_points):
-        """Calculate the Jacobian sums for each point and point pair."""
-        self._jacobians = np.linalg.norm(
-                np.cross(triangle_points[:, 1] - triangle_points[:, 0],
-                         triangle_points[:, 2] - triangle_points[:, 0]),
-                axis=-1)
-        # build diagonal ordered matrices of the jacobian sums
-        n = len(self.band.kpoints)
-        i_idx = self.band.kfaces[:, 0]
-        j_idx = self.band.kfaces[:, 1]
-        k_idx = self.band.kfaces[:, 2]
-        rows = np.concatenate((i_idx, j_idx, k_idx, i_idx, i_idx,
-                               j_idx, j_idx, k_idx, k_idx))
-        cols = np.concatenate((i_idx, j_idx, k_idx, j_idx, k_idx,
-                               i_idx, k_idx, i_idx, j_idx))
-        self._jacobian_sums = scipy.sparse.csc_array(
-            (np.tile(self._jacobians, 9), (rows, cols)), shape=(n, n))
-        self._overlap_matrix = self._jacobian_sums / 24
-        self._overlap_matrix.setdiag(2 * self._overlap_matrix.diagonal())
-
-    def _calculate_derivative_sums(self, triangle_points):
-        """
-        Calculate the field-independent part of the derivative term.
-        """
-        derivative_components = (
-            triangle_points - np.roll(triangle_points, -2, axis=1))
-        i_idx = self.band.kfaces
-        j_idx = np.roll(self.band.kfaces, -1, axis=1)
-        k_idx = np.roll(self.band.kfaces, -2, axis=1)
-        rows = np.concatenate((i_idx.flat, k_idx.flat))
-        cols = np.tile(j_idx.flat, 2)
-        self._derivatives = [
-            scipy.sparse.csc_array((
-            np.tile(component.flat, 2), (rows, cols))) for component in
-            derivative_components.transpose(2, 0, 1)]
-        if self.band.periodic:
-            self._derivatives = [
-                (self.band.periodic_projector @ derivative
-                 @ self.band.periodic_projector.T).tocsc()
-                for derivative in self._derivatives]
-
-    def _calculate_velocity_projections(self, vhats):
-        self._vhat_projections = self._overlap_matrix.tocsr() @ vhats
-        if self.band.periodic:
-            self._vhat_projections = \
-                self.band.periodic_projector @ self._vhat_projections
-
-    def _build_differential_operator(self):
-        """
-        Build the differential operator from the elements of the
-        band structure and the conductivity information.
-        """
-        if not self._is_scattering_saved:
-            self._discretize_scattering()
-            self._build_out_scattering_matrix()
-            self._is_scattering_saved = True
-        if self._derivative_term is None:
-            self._derivative_term = sum(
-                Bi / 6 * Di for Bi, Di in zip(self.field, self._derivatives))
-        self._differential_operator = \
-            self._out_scattering - e/hbar*self._derivative_term
-
-    def _discretize_scattering(self):
-        """
-        Discretize the scattering rate and the scattering kernel
-        for each element.
-        """
-        if self.scattering_kernel is None:
-            self._discretize_independent_out_scattering()
-            return
-
-        if isinstance(self.scattering_kernel, SumKernel):
-            self._fem_to_kernel = np.empty((0, len(self.band.kpoints)))
-            fem_basis_scattering_rate = np.zeros(len(self.band.kpoints))
-            coeffs = np.empty((0, 0))
-            if self.scattering_kernel.custom_kernel is not None:
-                fem_to_kernel, scattering_rate = \
-                    self._discretize_custom_kernel(
-                        self.scattering_kernel.custom_kernel)
-                coeffs = scipy.linalg.block_diag(
-                    coeffs, self.scattering_kernel.custom_kernel.coeffs)
-                self._fem_to_kernel = np.vstack(
-                    (self._fem_to_kernel, fem_to_kernel))
-                fem_basis_scattering_rate += scattering_rate
-            if len(self.scattering_kernel.explicit_kernels) > 0:
-                fem_to_kernel, scattering_rate = \
-                    self._discretize_explicit_kernel(self.scattering_kernel)
-                coeffs = scipy.linalg.block_diag(
-                    coeffs, self.scattering_kernel.coeffs)
-                self._fem_to_kernel = np.vstack(
-                    (self._fem_to_kernel, fem_to_kernel))
-                fem_basis_scattering_rate += scattering_rate
-        elif isinstance(self.scattering_kernel, CustomKernel):
-            self._fem_to_kernel, fem_basis_scattering_rate = \
-                self._discretize_custom_kernel(self.scattering_kernel)
-            coeffs = self.scattering_kernel.coeffs
-        else:
-            self._fem_to_kernel, fem_basis_scattering_rate = \
-                self._discretize_explicit_kernel(self.scattering_kernel)
-            coeffs = self.scattering_kernel.coeffs
-        self._in_scattering_matrix = -angstrom**2 * THz * coeffs
-        self._calculate_scattering_invlen(fem_basis_scattering_rate)
-    
-    def _discretize_custom_kernel(self, kernel):
-        kernel.decompose(self.band)
-        fem_to_kernel = (self._overlap_matrix @ kernel.projector).T
-        area_sums = self._jacobian_sums.diagonal() / 6
-        fem_basis_scattering_rate = angstrom**2 * (
-            (area_sums[None, :] @ kernel.projector)
-            @ kernel.coeffs @ kernel.projector.T).flatten()
-        return fem_to_kernel, fem_basis_scattering_rate
-
-    def _discretize_explicit_kernel(self, kernel):
-        fem_to_kernel = np.zeros(
-            (kernel.coeffs.shape[0], len(self.band.kpoints)),
-            dtype=kernel.coeffs.dtype)
-        sym_basis_scattering_rate = self._calculate_kernel_quadratures(
-            kernel, fem_to_kernel)
-        # (U^(-1))^i_a = sum_j (M^(-1))^ij U^dagger_ja
-        transformed_scatrate = \
-            fem_to_kernel.conj().T @ sym_basis_scattering_rate
-        overlap_matrix_factor = scipy.sparse.linalg.splu(
-            self._overlap_matrix)
-        fem_basis_scattering_rate = \
-            overlap_matrix_factor.solve(transformed_scatrate.real)
-        if transformed_scatrate.dtype == complex:
-            fem_basis_scattering_rate += 1j * overlap_matrix_factor.solve(
-                transformed_scatrate.imag)
-        return fem_to_kernel, fem_basis_scattering_rate
-
-    def _discretize_independent_out_scattering(self):
-        if self.scattering_rate is None:
-            raise ValueError(
-                "Either scattering_rate or scattering_kernel must be set.")
-        else:
-            if isinstance(self.scattering_rate, Callable):
-                scattering = self.scattering_rate(
-                    kx=self.band.kpoints[:, 0], ky=self.band.kpoints[:, 1],
-                    kz=self.band.kpoints[:, 2], vx=self._velocities[:, 0],
-                    vy=self._velocities[:, 1], vz=self._velocities[:, 2])
-            else:
-                scattering = self.scattering_rate
-        self._calculate_scattering_invlen(scattering)
-    
-    def _calculate_kernel_quadratures(self, kernel, fem_to_kernel):
-        scattering_quadratures = np.empty(
-            (kernel.coeffs.shape[0],
-             *self._quadrature_points.shape[:-1]))
-        weights = quad_weights[self.quadrature_order]
-        for a in range(kernel.coeffs.shape[0]):
-            scattering_quadratures[a] = kernel.eval_basis(
-                a, angstrom * self._quadrature_points[:, :, 0],
-                angstrom * self._quadrature_points[:, :, 1],
-                angstrom * self._quadrature_points[:, :, 2]).conj()
-            for vertex in range(3):
-                fem_basis = quad_points[self.quadrature_order][:, vertex]
-                integrals = scattering_quadratures[a] @ (weights * fem_basis)
-                np.add.at(fem_to_kernel[a], self.band.kfaces[:, vertex],
-                          self._jacobians / 2 * integrals.flatten())
-        return self._integrate_kernel_quadratures(kernel, scattering_quadratures)
-    
-    def _integrate_kernel_quadratures(self, kernel, scattering_quadratures):
-        sym_basis_scattering_rate = np.zeros(
-            kernel.coeffs.shape[0], dtype=kernel.coeffs.dtype)
-        weights = quad_weights[self.quadrature_order]
-        for a in range(kernel.coeffs.shape[0]):
-            sym_basis_integral = np.sum(
-                self._jacobians / 2 # triangle areas
-                * (scattering_quadratures[a] @ weights[:, None]).flatten())
-            for b in range(kernel.coeffs.shape[1]):
-                # 1/tau_b = sum_a C_ab^* int dk psi_a(k)
-                sym_basis_scattering_rate[b] += angstrom**2 * (
-                    np.conj(kernel.coeffs[a, b]) * sym_basis_integral)
-        return sym_basis_scattering_rate
-
-    def _calculate_scattering_invlen(self, scattering):
-        # scattering_invlen is the inverse scattering length gamma
-        # separate the optical conductivity case to avoid making
-        # the number complex when it is not needed
-        if self.frequency == 0.0:
-            self._scattering_invlen = THz * scattering / self._vmags
-        else:
-            self._scattering_invlen = \
-                THz * (scattering - 2j*np.pi*self.frequency) / self._vmags
-
-    def _build_out_scattering_matrix(self):
-        """Calculate the out-scattering matrix (Gamma)"""
-        self._out_scattering = (
-            # alpha_ij * gamma^i
-            (self._jacobian_sums * self._scattering_invlen[:, None]).tocsc()
-            # alpha_ij * gamma^j
-            + (self._jacobian_sums * self._scattering_invlen[None, :]).tocsc()
-            # sum_k alpha_ik * gamma^k
-            + scipy.sparse.diags_array(
-                self._jacobian_sums @ self._scattering_invlen, format='csc')
-            ) / 60
-        # alpha(i,j,k) * gamma^k / 120
-        i_idx = self.band.kfaces[:, 0]
-        j_idx = self.band.kfaces[:, 1]
-        k_idx = self.band.kfaces[:, 2]
-        n = len(self.band.kpoints)
-        rows = np.concatenate((i_idx, i_idx, j_idx, j_idx, k_idx, k_idx))
-        cols = np.concatenate((j_idx, k_idx, i_idx, k_idx, i_idx, j_idx))
-        data = np.concatenate((
-            self._jacobians * self._scattering_invlen[k_idx],
-            self._jacobians * self._scattering_invlen[j_idx],
-            self._jacobians * self._scattering_invlen[k_idx],
-            self._jacobians * self._scattering_invlen[i_idx],
-            self._jacobians * self._scattering_invlen[j_idx],
-            self._jacobians * self._scattering_invlen[i_idx])) / 120
-        self._out_scattering += scipy.sparse.csc_array(
-            (data, (rows, cols)), shape=(n, n))
-        if self.band.periodic:
-            self._out_scattering = (
-                self.band.periodic_projector @ self._out_scattering
-                @ self.band.periodic_projector.T).tocsc()
-
+    def _build_finite_elements(self, energy):
+        self._finite_elements[energy] = FiniteElements(
+            band=self.band,
+            energy=energy,
+            frequency=self.frequency,
+            field=self.field,
+            scattering_rate=self.scattering_rate,
+            scattering_kernel=self.scattering_kernel,
+            quadrature_order=self.quadrature_order,
+            correct_curvature=self.correct_curvature
+        )
 
 def solve_sparse_plus_lowrank(
         A, C, U, V, b, sparse_solver=scipy.sparse.linalg.spsolve):
@@ -614,4 +363,9 @@ def solve_sparse_plus_lowrank(
     A_inv_U = sparse_solver(A, U)
     I = np.eye(C.shape[0])
     CV = C @ V
-    return A_inv_b - A_inv_U @ np.linalg.solve(I + CV@A_inv_U, CV@A_inv_b)
+    try:
+        dense_inv = np.linalg.solve(I + CV @ A_inv_U,CV @ A_inv_b)
+    except np.linalg.LinAlgError:
+        full_operator = A + scipy.sparse.csc_array(U @ C @ V)
+        return scipy.sparse.linalg.spsolve(full_operator, b)
+    return A_inv_b - A_inv_U @ dense_inv

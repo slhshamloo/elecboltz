@@ -115,24 +115,24 @@ class FiniteElements:
         self.is_scattering_saved = False
 
     def _calculate_jacobian_sums(self, triangle_points):
-            """Calculate the Jacobian sums for each point and point pair."""
-            self.jacobians = np.linalg.norm(
-                    np.cross(triangle_points[:, 1] - triangle_points[:, 0],
-                             triangle_points[:, 2] - triangle_points[:, 0]),
-                    axis=-1)
-            # build diagonal ordered matrices of the jacobian sums
-            n = len(self.surface.kpoints)
-            i_idx = self.surface.kfaces[:, 0]
-            j_idx = self.surface.kfaces[:, 1]
-            k_idx = self.surface.kfaces[:, 2]
-            rows = np.concatenate((i_idx, j_idx, k_idx, i_idx, i_idx,
-                                   j_idx, j_idx, k_idx, k_idx))
-            cols = np.concatenate((i_idx, j_idx, k_idx, j_idx, k_idx,
-                                   i_idx, k_idx, i_idx, j_idx))
-            self.jacobian_sums = scipy.sparse.csc_array(
-                (np.tile(self.jacobians, 9), (rows, cols)), shape=(n, n))
-            self.overlap_matrix = self.jacobian_sums / 24
-            self.overlap_matrix.setdiag(2 * self.overlap_matrix.diagonal())
+        """Calculate the Jacobian sums for each point and point pair."""
+        self.jacobians = np.linalg.norm(
+            np.cross(triangle_points[:, 1] - triangle_points[:, 0],
+                     triangle_points[:, 2] - triangle_points[:, 0]),
+            axis=-1)
+        # build diagonal ordered matrices of the jacobian sums
+        n = len(self.surface.kpoints)
+        i_idx = self.surface.kfaces[:, 0]
+        j_idx = self.surface.kfaces[:, 1]
+        k_idx = self.surface.kfaces[:, 2]
+        rows = np.concatenate((i_idx, j_idx, k_idx, i_idx, i_idx,
+                               j_idx, j_idx, k_idx, k_idx))
+        cols = np.concatenate((i_idx, j_idx, k_idx, j_idx, k_idx,
+                               i_idx, k_idx, i_idx, j_idx))
+        self.jacobian_sums = scipy.sparse.csc_array(
+            (np.tile(self.jacobians, 9), (rows, cols)), shape=(n, n))
+        self.overlap_matrix = self.jacobian_sums / 24
+        self.overlap_matrix.setdiag(2 * self.overlap_matrix.diagonal())
     
     def _calculate_derivative_sums(self, triangle_points):
         """

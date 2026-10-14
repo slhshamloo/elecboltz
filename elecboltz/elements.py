@@ -76,6 +76,14 @@ class FiniteElements:
         self.in_scattering_matrix = None
         self.build_band_elements()
 
+    @property
+    def kpoints(self):
+        return self.surface.kpoints
+
+    @property
+    def kfaces(self):
+        return self.surface.kfaces
+
     def build_band_elements(self):
         """
         Build the arrays corresponding to the discretization of the
@@ -130,8 +138,8 @@ class FiniteElements:
         """
         Calculate the field-independent part of the derivative term.
         """
-        derivative_components = (
-            triangle_points - np.roll(triangle_points, -2, axis=1))
+        derivative_components = \
+            triangle_points - np.roll(triangle_points, -2, axis=1)
         i_idx = self.surface.kfaces
         j_idx = np.roll(self.surface.kfaces, -1, axis=1)
         k_idx = np.roll(self.surface.kfaces, -2, axis=1)

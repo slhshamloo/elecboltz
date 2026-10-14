@@ -84,6 +84,7 @@ class Conductivity:
             frequency: Real = 0.0, correct_curvature: bool = True,
             quadrature_order: int = 2, Bamp: Real | None = None,
             Btheta: Real | None = None, Bphi: Real | None = None, **kwargs):
+        self._finite_elements = {}
         self.correct_curvature = correct_curvature
         self.quadrature_order = quadrature_order
         # avoid triggering setattr in the constructor
@@ -94,7 +95,6 @@ class Conductivity:
         self._field_direction = None
         self.set_field(field, Bamp, Btheta, Bphi)
         self.sigma = np.zeros((3, 3))
-        self._finite_elements = {}
 
     def __setattr__(self, name, value):
         if name == 'band':
@@ -112,7 +112,7 @@ class Conductivity:
             super().__setattr__(name, value)
         if name in ['field', 'Bamp', 'Btheta', 'Bphi']:
             self.erase_cache(elements=False, scattering=False,
-                              derivative=True)
+                             derivative=True)
             super().__setattr__(name, value)
             if name == 'field':
                 super().__setattr__('Bamp', None)
@@ -186,6 +186,8 @@ class Conductivity:
         super().__setattr__('Bamp', Bamp)
         super().__setattr__('Btheta', Btheta)
         super().__setattr__('Bphi', Bphi)
+        for element in self._finite_elements.values():
+            element.field = field
 
     def calculate(self, i: Sequence[int] | int | None = None,
                   j: Sequence[int] | int | None = None

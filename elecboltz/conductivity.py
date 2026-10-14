@@ -366,6 +366,22 @@ def solve_sparse_plus_lowrank(
     try:
         dense_inv = np.linalg.solve(I + CV @ A_inv_U, CV @ A_inv_b)
     except np.linalg.LinAlgError:
-        full_operator = A + scipy.sparse.csc_array(U @ C @ V)
-        return scipy.sparse.linalg.spsolve(full_operator, b)
+        # Solve the equivalent bordered system without forming the dense
+        # n-by-n low-rank update U @ C @ V.
+        # The bordered system is:
+        # [ A  U ] [ x ] = [ b ]
+        # [ -CV I ] [ y ]   [ 0 ]
+        # which is equivalent to the original (A + U @ C @ V)x = b.
+        rank = C.shape[0]
+        bordered_operator = scipy.sparse.bmat([
+            [A, scipy.sparse.csc_array(U)],
+            [-scipy.sparse.csc_array(CV),
+             scipy.sparse.eye(rank, format='csc')]],
+            format='csc')
+        b = np.asarray(b)
+        zero_block = np.zeros((rank, *b.shape[1:]), dtype=b.dtype)
+        bordered_rhs = np.concatenate((b, zero_block), axis=0)
+        bordered_solution = scipy.sparse.linalg.spsolve(
+            bordered_operator, bordered_rhs)
+        return bordered_solution[:A.shape[0]]
     return A_inv_b - A_inv_U @ dense_inv

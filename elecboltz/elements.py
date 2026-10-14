@@ -84,6 +84,10 @@ class FiniteElements:
     def kfaces(self):
         return self.surface.kfaces
 
+    @property
+    def periodic_projector(self):
+        return self.surface.periodic_projector
+
     def build_band_elements(self):
         """
         Build the arrays corresponding to the discretization of the

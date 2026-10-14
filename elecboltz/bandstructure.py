@@ -272,7 +272,7 @@ class BandStructure:
         triangle_points = self.kpoints[self.kfaces] / angstrom
         vs = np.column_stack(self.velocity_func(
             self.kpoints[:, 0], self.kpoints[:, 1], self.kpoints[:, 2]))
-        vhats = vs / np.linalg.norm(vs, axis=-1)[:, None]
+        vhats = vs / np.linalg.norm(vs, axis=-1)[:, np.newaxis]
         normals = vhats[self.kfaces]
         triangle_points = self._curvature_correct_points(
             triangle_points, normals)
@@ -397,8 +397,8 @@ class BandStructure:
                 -self._gvec[1]:self._gvec[1]:1j*self.resolution[1],
                 -self._gvec[2]:self._gvec[2]:1j*self.resolution[2]]),
             level=self.chemical_potential + energy)
-        kpoints *= (2*self._gvec / (self.resolution-1))[None, :]
-        kpoints -= self._gvec[None, :]
+        kpoints *= (2*self._gvec / (self.resolution-1))[np.newaxis, :]
+        kpoints -= self._gvec[np.newaxis, :]
         for _ in range(self.n_correct):
             kpoints = self._apply_newton_correction(kpoints, energy)
         return IsoEnergySurface(kpoints, kfaces)
@@ -423,11 +423,11 @@ class BandStructure:
         with np.errstate(divide='ignore', invalid='ignore'):
             # cosine = nhat.cdiff / |cdiff||nhat| and |nhat| = 1
             cosines = np.einsum('ijk,ik->ij', normals, center_diff
-                                ) / projected_diff[:, None]
+                                ) / projected_diff[:, np.newaxis]
             # Handle division by zero
             np.nan_to_num(cosines, copy=False, nan=1.0)
-        diff = projected_diff[:, None] / cosines
-        return points + normals*diff[:, :, None]
+        diff = projected_diff[:, np.newaxis] / cosines
+        return points + normals*diff[:, :, np.newaxis]
 
 
 def _apply_newton_correction(points, func, gradient, iso_value):
@@ -454,4 +454,5 @@ def _apply_newton_correction(points, func, gradient, iso_value):
     gradient_vectors = np.column_stack(gradient(
         points[:, 0], points[:, 1], points[:, 2]))
     gradient_norms = np.linalg.norm(gradient_vectors, axis=-1)
-    return points - (residuals/gradient_norms**2)[:, None]*gradient_vectors
+    return points - (residuals/gradient_norms**2
+                     )[:, np.newaxis]*gradient_vectors

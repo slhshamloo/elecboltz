@@ -217,7 +217,7 @@ class Conductivity:
         # (A^{-1})^{ij} (v_b)_j
         self._linear_solution = self._solve(j)
         if len(self._linear_solution.shape) == 1:
-            self._linear_solution = self._linear_solution[:, None]
+            self._linear_solution = self._linear_solution[:, np.newaxis]
         # (v_a)_i (A^{-1} v_b)^i
         sigma_result = (self._finite_elements[0.0].vhat_projections[:, i].T
                         @ self._linear_solution)
@@ -273,7 +273,7 @@ class Conductivity:
             # S_ij = C_ij / |v|_i, therefore we scale one of the U or V
             # matrices by the velocity magnitude to include the 1/|v|
             # factor in the transformed, full matrix
-            U = elements.fem_to_kernel.conj().T / elements.vmags[:, None]
+            U = elements.fem_to_kernel.conj().T / elements.vmags[:, np.newaxis]
             V = elements.fem_to_kernel
             # A_periodic = P A_0 P^dagger + P U C V P^dagger
             if self.band.periodic:

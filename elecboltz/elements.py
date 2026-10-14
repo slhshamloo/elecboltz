@@ -93,7 +93,7 @@ class FiniteElements:
             self.surface.kpoints[:, 0], self.surface.kpoints[:, 1],
             self.surface.kpoints[:, 2]))
         self.vmags = np.linalg.norm(self.velocities, axis=1)
-        vhats = self.velocities / self.vmags[:, None]
+        vhats = self.velocities / self.vmags[:, np.newaxis]
 
         triangle_points = self.surface.kpoints[self.surface.kfaces] / angstrom
         if self.correct_curvature:
@@ -223,7 +223,7 @@ class FiniteElements:
         fem_to_kernel = (self.overlap_matrix @ kernel.projector).T
         area_sums = self.jacobian_sums.diagonal() / 6
         fem_basis_scattering_rate = angstrom**2 * (
-            (area_sums[None, :] @ kernel.projector)
+            (area_sums[np.newaxis, :] @ kernel.projector)
             @ kernel.coeffs @ kernel.projector.T).flatten()
         return fem_to_kernel, fem_basis_scattering_rate
 
@@ -291,7 +291,7 @@ class FiniteElements:
         for a in range(kernel.coeffs.shape[0]):
             sym_basis_integral = np.sum(
                 self.jacobians / 2 # triangle areas
-                * (scattering_quadratures[a] @ weights[:, None]).flatten())
+                * (scattering_quadratures[a] @ weights[:, np.newaxis]).flatten())
             for b in range(kernel.coeffs.shape[1]):
                 # 1/tau_b = sum_a C_ab^* int dk psi_a(k)
                 sym_basis_scattering_rate[b] += angstrom**2 * (
@@ -312,9 +312,10 @@ class FiniteElements:
         """Calculate the out-scattering matrix (Gamma)"""
         self.out_scattering = (
             # alpha_ij * gamma^i
-            (self.jacobian_sums * self.scattering_invlen[:, None]).tocsc()
+            (self.jacobian_sums * self.scattering_invlen[:, np.newaxis]
+             ).tocsc()
             # alpha_ij * gamma^j
-            + (self.jacobian_sums * self.scattering_invlen[None, :]).tocsc()
+            + (self.jacobian_sums * self.scattering_invlen[np.newaxis, :]).tocsc()
             # sum_k alpha_ik * gamma^k
             + scipy.sparse.diags_array(
                 self.jacobian_sums @ self.scattering_invlen, format='csc')

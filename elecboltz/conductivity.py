@@ -208,7 +208,7 @@ class Conductivity:
         """
         if 0.0 not in self._finite_elements:
             self._build_finite_elements(0.0)
-        if not self._finite_elements[0.0].is_scattering_saved:
+        if self._finite_elements[0.0].differential_operator is None:
             self._finite_elements[0.0]._build_differential_operator()
         
         i, j = self._get_calculation_indices(i, j)
@@ -364,7 +364,7 @@ def solve_sparse_plus_lowrank(
     I = np.eye(C.shape[0])
     CV = C @ V
     try:
-        dense_inv = np.linalg.solve(I + CV @ A_inv_U,CV @ A_inv_b)
+        dense_inv = np.linalg.solve(I + CV @ A_inv_U, CV @ A_inv_b)
     except np.linalg.LinAlgError:
         full_operator = A + scipy.sparse.csc_array(U @ C @ V)
         return scipy.sparse.linalg.spsolve(full_operator, b)

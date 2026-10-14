@@ -74,9 +74,9 @@ class FiniteElements:
         self.fem_to_kernel = None
         self.scattering_invlen = None
         self.in_scattering_matrix = None
-        self.build_elements()
+        self.build_band_elements()
 
-    def build_elements(self):
+    def build_band_elements(self):
         """
         Build the arrays corresponding to the discretization of the
         band structure.
@@ -161,13 +161,13 @@ class FiniteElements:
         if not self.is_scattering_saved:
             self._discretize_scattering()
             self._build_out_scattering_matrix()
+            self.is_scattering_saved = True
         if self.derivative_term is None:
             self.derivative_term = sum(
                 Bi / 6 * Di for Bi, Di
                 in zip(self.field, self.derivative_sums))
         self.differential_operator = \
             self.out_scattering - e/hbar*self.derivative_term
-        self.is_scattering_saved = True
 
     def _discretize_scattering(self):
         """

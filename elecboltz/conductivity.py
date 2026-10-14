@@ -300,15 +300,12 @@ class Conductivity:
 
     def _build_finite_elements(self, energy):
         self._finite_elements[energy] = FiniteElements(
-            band=self.band,
-            energy=energy,
-            frequency=self.frequency,
-            field=self.field,
+            band=self.band, energy=energy,
+            frequency=self.frequency, field=self.field,
             scattering_rate=self.scattering_rate,
             scattering_kernel=self.scattering_kernel,
             quadrature_order=self.quadrature_order,
-            correct_curvature=self.correct_curvature
-        )
+            correct_curvature=self.correct_curvature)
 
 def solve_sparse_plus_lowrank(
         A, C, U, V, b, sparse_solver=scipy.sparse.linalg.spsolve):

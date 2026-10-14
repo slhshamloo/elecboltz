@@ -1,5 +1,6 @@
 from .bandstructure import BandStructure
 from .conductivity import Conductivity
+from .elements import FiniteElements
 from .params import easy_params, _deep_update
 
 import numpy as np
@@ -528,6 +529,29 @@ class FullScatteringFitter:
                         jac[a, b], p, cond._jacobians*Y_vec[a]*X_vec[b]/2)
         jac = rho @ jac @ rho
         return e**2 / (4 * np.pi**3 * hbar) / self.band.bz_ratio / 60 * jac
+
+
+def _calc_gradient_operator(elements: FiniteElements):
+    triangle_points = elements.kpoints[elements.kfaces] / angstrom
+    diffs = triangle_points - np.roll(triangle_points, -2, axis=1)
+    weights = np.sqrt(2 * elements.jacobians)
+    weighted_diffs = diffs / weights[:, np.newaxis, np.newaxis]
+    # Reorder (faces, vertices, dims) -> (faces, dims, vertices) and flatten.
+    # For each (face, dim), lists the 3 values for vertices [j, k, i].
+    weighted_diffs = weighted_diffs.transpose(0, 2, 1).flatten()
+
+    i_idx = elements.kfaces
+    j_idx = np.roll(elements.kfaces, -1, axis=1)
+    k_idx = np.roll(elements.kfaces, -2, axis=1)
+    rows = np.concatenate((i_idx.flat, k_idx.flat))
+    cols = np.tile(j_idx.flat, 2)
+
+    grad_op = scipy.sparse.csr_matrix(
+        (weighted_diffs, (rows, cols)),
+        shape=(3*len(elements.kfaces), len(elements.kpoints)))
+    if elements.band.periodic:
+        grad_op = grad_op @ elements.periodic_projector.T
+    return grad_op
 
 
 def _mean_squared_error(y_fit, y_data):

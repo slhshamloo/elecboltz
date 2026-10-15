@@ -71,17 +71,15 @@ class FittingRoutine:
         A function that takes the fit and data y values, and
         returns a scalar loss value. By default, the mean absolute
         error is used.
-    preprocess
-        This callable is applied to the data y values before
-        calculating the loss. It takes ``x_data`` and a ``y`` with
-        a format similar to ``y_data``, and returns the processed
-        ``y``, again with a format similar to ``y_data``.
-        By default, no postprocessing is applied. An example
-        use case is filtering out parts of the values where the
-        data can be unreliable.
     postprocess
-        Like ``preprocess``, but applied to the fit y values.
-                By default, no postprocessing is applied.
+        This callable is applied to the data y values before
+        calculating the loss. It takes ``x_data`` and a ``y`` with a
+        format similar to ``y_data``, and returns the processed ``y``,
+        again with a format similar to ``y_data``. By default, no
+        postprocessing is applied. An example use case is applying a
+        mask to ignore parts of the values where the data can be
+        unreliable. This is to apply the same preprocessing that might
+        be applied to the data before fitting.
     save_path
         The directory where the fitting logs will be saved. If not
         provided, logs will not be saved.
@@ -135,7 +133,6 @@ class FittingRoutine:
                  y_normalize: Mapping[str, Real | Sequence[Real]] = None,
                  loss: Callable = lambda y_fit, y_data: np.mean(
                      np.abs(y_fit - y_data)),
-                 preprocess: Callable = lambda x, y: y,
                  postprocess: Callable = lambda x, y: y, save_path: str = None,
                  save_label: str = "fit", update_keys: Collection[str] = None,
                  multi_params: Collection[str] = None,
@@ -152,7 +149,6 @@ class FittingRoutine:
         self.y_shift = y_shift
         self.y_normalize = y_normalize
         self.loss = loss
-        self.preprocess = preprocess
         self.postprocess = postprocess
         self.save_path = save_path
         self.save_label = save_label
@@ -259,7 +255,6 @@ class FittingRoutine:
                 for label in self.y_normalize:
                     y_fit[label] *= self.y_normalize[label]
 
-        y_data = self.preprocess(self.x_data, self.y_data)
         y_fit = self.postprocess(self.x_data, y_fit)
         y_fit = np.concatenate(list(y_fit.values()))
         y_data = np.concatenate(list(y_data.values()))
@@ -304,7 +299,6 @@ class FittingRoutine:
                         y_fit[label] *= self.y_normalize[label][i]
             x_data_set = {label: x[i] for label, x in self.x_data.items()}
             y_data_set = {label: y[i] for label, y in self.y_data.items()}
-            y_data_set = self.preprocess(x_data_set, y_data_set)
             y_fit = self.postprocess(x_data_set, y_fit)
             y_fit = np.concatenate(list(y_fit.values()))
             y_data_set = np.concatenate(list(y_data_set.values()))
@@ -332,6 +326,37 @@ class FullScatteringFitter:
         Initial parameters for the fitting routine, and also other
         parameters for initiallizing the classes. This is passed through
         ``easy_params`` to the ``BandStructure`` and ``Conductivity``.
+    x_data
+        The independent variable data (e.g. field). The name of the
+        variable is mapped to the data, e.g.
+        ``{'field': [0, 1, 2]}``.
+    y_data
+        The dependent variable data (e.g. conductivity). The name of
+        the variable is mapped to the data, e.g.
+        ``{'sigma_xx': [1.1, 2.4, 3.8]}``. The name of each variable
+        must start with "sigma" or "rho" (for conductivity or
+        resistivity, respectively), and you can add a suffix to specify
+        the component (e.g. ``'sigma_xx'``, ``'rho_xy'``).
+    x_shift
+        If provided, the y values will be shifted by the y value at
+        this x point. The mapping must have the same structure as
+        ``x_data``, but with single values instead of arrays as
+        the values.
+    x_normalize
+        If provided, the y values will be normalized by the y value
+        at this x point. The mapping must have the same structure
+        as ``x_data``, but with single values instead of arrays as
+        the values. Note that shifts are applied before normalization.
+    y_shift
+        The y values will be shifted to this value (if ``x_shift`` is
+        provided). The mapping must have the same structure as
+        ``y_data``, but with single values instead of arrays as the
+        values.
+    y_normalize
+        The y values will be shifted to this value (if ``x_shift`` is
+        provided). The mapping must have the same structure as
+        ``y_data``, but with single values instead of arrays as the
+        values.
     save_path
         The directory where the fitting logs will be saved. If not
         provided, logs will not be saved.
@@ -339,6 +364,9 @@ class FullScatteringFitter:
         Label of the results (used as file names).
     print_log
         If True, the fitting progress will be printed to the console.
+    n_threads
+        The number of threads to use for parallelizing the fitting
+        routine. If 1, no parallelization is done.
     
     Attributes
     ----------
@@ -358,7 +386,7 @@ class FullScatteringFitter:
                  x_normalize: Mapping[str, Real | Sequence[Real]] = None,
                  y_shift: Mapping[str, Real | Sequence[Real]] = None,
                  y_normalize: Mapping[str, Real | Sequence[Real]] = None,
-                 preprocess: Callable = lambda x, y: y,
+                 regularization: float = 0.0,
                  save_path: str = None, save_label: str = "fit",
                  print_log: bool = True, n_threads: int = 1):
         self.params = easy_params(init_params)
@@ -373,7 +401,6 @@ class FullScatteringFitter:
         self.x_normalize = x_normalize
         self.y_shift = y_shift
         self.y_normalize = y_normalize
-        self.preprocess = preprocess
 
         self.save_path = save_path
         self.save_label = save_label
@@ -437,8 +464,6 @@ class FullScatteringFitter:
         self._calc_iterations(scattering_rates)
         self._apply_y_shifts(cond)
 
-
-        y_data = self.preprocess(self.x_data, self.y_data)
         y_fit = np.concatenate(list(self.y_fit.values()))
         y_data = np.concatenate(list(y_data.values()))
         self.residual_vector = y_fit - y_data
@@ -582,7 +607,6 @@ def fit_model(x_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
               y_normalize: Mapping[str, Real | Sequence[Real]] = None,
               optimizer: Callable = scipy.optimize.differential_evolution,
               loss: Callable = _mean_absolute_error,
-              preprocess: Callable = _dummy_processor,
               postprocess: Callable = _dummy_processor,
               save_path: str = None, save_label: str = None,
               print_log: bool = True, **kwargs):
@@ -652,31 +676,30 @@ def fit_model(x_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
         as ``x_data``, but with single values instead of arrays as
         the values. Note that shifts are applied before normalization.
     y_shift
-        The y values will be normalized to this value (if
-        ``x_normalize`` is provided). The mapping must have the same
-        structure as ``y_data``, but with single values instead of
-        arrays as the values.
-    y_normalize
         The y values will be shifted to this value (if ``x_shift`` is
         provided). The mapping must have the same structure as
         ``y_data``, but with single values instead of arrays as the
         values.
+    y_normalize
+        The y values will be normalized to this value (if
+        ``x_normalize`` is provided). The mapping must have the same
+        structure as ``y_data``, but with single values instead of
+        arrays as the values.
     optimizer
         The optimizer function to use for fitting. It must have the
         same interface as the SciPy optimizers.
     loss
         A function that takes the fit and data y values, and returns a
         scalar loss value. By default, the mean absolute error is used.
-    preprocess
+    postprocess
         This callable is applied to the data y values before
         calculating the loss. It takes ``x_data`` and a ``y`` with a
         format similar to ``y_data``, and returns the processed ``y``,
         again with a format similar to ``y_data``. By default, no
-        postprocessing is applied. An example use case is filtering out
-        parts of the values where the data can be unreliable.
-    postprocess
-        Like ``preprocess``, but applied to the fit y values.
-        By default, no postprocessing is applied.
+        postprocessing is applied. An example use case is applying a
+        mask to ignore parts of the values where the data can be
+        unreliable. This is to apply the same preprocessing that might
+        be applied to the data before fitting.
     save_path
         The directory where the fitting results will be saved.
         If not provided, results will not be saved.
@@ -709,7 +732,7 @@ def fit_model(x_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
     begin_time = datetime.now()
     fitter = FittingRoutine(
         init_params, x_data, y_data, x_shift, x_normalize,
-        y_shift, y_normalize, loss, preprocess, postprocess,
+        y_shift, y_normalize, loss, postprocess,
         save_path, save_label, update_keys=update_keys,
         multi_params=multi_params, multi_params_labels=multi_params_labels,
         print_log=print_log)
@@ -732,8 +755,6 @@ def fit_full_scattering(
         bounds: Sequence[Sequence] | Sequence = (0, np.inf),
         x_shift: Mapping = None, x_normalize: Mapping = None,
         y_shift: Mapping = None, y_normalize: Mapping = None,
-        preprocess: Callable = _dummy_processor,
-        postprocess: Callable = _dummy_processor,
         save_path: str = None, save_label: str = None,
         print_log: bool = True, n_threads: int = 1, **kwargs):
     """Convenience function to set up and run a fitting routine.
@@ -760,7 +781,15 @@ def fit_full_scattering(
         Parameters for initiallizing the classes. This is passed through
         ``easy_params`` to the ``BandStructure`` and ``Conductivity``.
     init_scattering
-        Initial (constant) scattering rate for the fitting routine.
+        Initial scattering rate. Can either be: a single value;
+        a function of kx, ky, kz, vx, vy, vz, energy (or E),
+        and temperature (or T), note that all of these parameters are
+        optional and the function can take any subset of them, as long
+        as the names match, and also the function must collect extra
+        keyword arguments (``**kwargs``) to avoid errors; or a mapping
+        of a mapping of the form
+        ``{'scattering_model: {...}, 'scattering_params: {...}}``
+        which is the same as `elecboltz.params.easy_params` accepts.
     bounds
         Bounds for the scattering rates. This would typically be a
         single sequence of the form (min, max) to set the boundaries
@@ -778,25 +807,18 @@ def fit_full_scattering(
         as ``x_data``, but with single values instead of arrays as
         the values. Note that shifts are applied before normalization.
     y_shift
-        The y values will be normalized to this value (if
-        ``x_normalize`` is provided). The mapping must have the same
-        structure as ``y_data``, but with single values instead of
-        arrays as the values.
-    y_normalize
         The y values will be shifted to this value (if ``x_shift`` is
         provided). The mapping must have the same structure as
         ``y_data``, but with single values instead of arrays as the
         values.
+    y_normalize
+        The y values will be normalized to this value (if
+        ``x_normalize`` is provided). The mapping must have the same
+        structure as ``y_data``, but with single values instead of
+        arrays as the values.
     loss
         A function that takes the fit and data y values, and returns a
         scalar loss value. By default, the mean absolute error is used.
-    preprocess
-        This callable is applied to the data y values before
-        calculating the loss. It takes ``x_data`` and a ``y`` with a
-        format similar to ``y_data``, and returns the processed ``y``,
-        again with a format similar to ``y_data``. By default, no
-        postprocessing is applied. An example use case is filtering out
-        parts of the values where the data can be unreliable.
     save_path
         The directory where the fitting results will be saved.
         If not provided, results will not be saved.
@@ -817,7 +839,7 @@ def fit_full_scattering(
     begin_time = datetime.now()
     fitter = FullScatteringFitter(
         init_params, x_data, y_data, x_shift, x_normalize,
-        y_shift, y_normalize, preprocess, save_path, save_label,
+        y_shift, y_normalize, save_path, save_label,
         print_log=print_log, n_threads=n_threads)
     x0 = np.full(len(fitter.band.kpoints), init_scattering)
     result = scipy.optimize.least_squares(

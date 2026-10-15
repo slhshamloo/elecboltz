@@ -32,17 +32,17 @@ class IsoEnergySurface:
         irreducible wedge. Each column corresponds to a point on this
         surface and contains one nonzero entry for its equivalent wedge
         point.
-    max_irreducible_index : int
-        The maximum index of the irreducible wedge points. The indices
+    n_irreducible : int
+        The number of the irreducible wedge's points. The indices
         of the points on the irreducible wedge range from 0 to this
-        value, inclusive.
+        value - 1.
     """
     def __init__(self, kpoints: np.ndarray, kfaces: np.ndarray):
         self.kpoints = kpoints
         self.kfaces = kfaces
         self.periodic_projector = None
         self.symmetry_projector = None
-        self.max_irreducible_index = -1
+        self.n_irreducible = -1
         self._compute_adaptive_tolerance()
         self.clean()
 
@@ -81,7 +81,7 @@ class IsoEnergySurface:
         self.kfaces = np.vstack(new_kfaces)
         self.clean()
 
-        self.max_irreducible_index = len(wedge_kpoints) - 1
+        self.n_irreducible = len(wedge_kpoints)
         self._build_symmetry_projector(wedge_kpoints, symmetry.matrices)
 
     def sort_and_reindex(self, sort_axis):

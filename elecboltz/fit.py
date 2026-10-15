@@ -559,6 +559,8 @@ class FullScatteringFitter:
                     np.add.at(jac[a, b], p,
                               cond._jacobians*Y_vec[a]*X_vec[b]/2)
         jac = rho @ jac @ rho
+        # chain rule for drho/d(1/tau) = (1/v) drho/dgamma
+        jac /= cond.elements[0.0].vmags
         return e**2 / (4 * np.pi**3 * hbar) / self.band.bz_ratio / 60 * jac
 
     def _calc_regularization(self):

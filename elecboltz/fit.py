@@ -458,16 +458,21 @@ class FullScatteringFitter:
                 self._scat_cache, scattering_rates):
             return
 
-        cond = Conductivity(self.band, scattering_rate=scattering_rates,
-                            **self.params)
+        if self.band.symmetry is None:
+            scat = scattering_rates
+        else:
+            scat = self.band.symmetry_projector.T @ scattering_rates
+        cond = Conductivity(self.band, scattering_rate=scat, **self.params)
         self._calc_y_multiplier(cond)
-        self._calc_iterations(scattering_rates)
+        self._calc_fit(scat)
         self._apply_y_shifts(cond)
+        if self.regularization > 0.0:
+            self._calc_regularization()
 
         y_fit = np.concatenate(list(self.y_fit.values()))
-        y_data = np.concatenate(list(y_data.values()))
+        y_data = np.concatenate(list(self.y_data.values()))
         self.residual_vector = y_fit - y_data
-        self.jacobian_matrix = np.hstack(list(self.jacobian_matrix.values()))
+        self.jacobian_matrix = np.vstack(list(self.jacobian_matrix.values()))
         self._scat_cache = np.copy(scattering_rates)
 
     def _calc_y_multiplier(self, cond):
@@ -491,18 +496,18 @@ class FullScatteringFitter:
             for label in self.y_fit:
                 self.y_fit[label] += self.y_shift[label]
 
-    def _calc_iterations(self, scattering_rates):
+    def _calc_fit(self, scattering_rates):
         n_data = len(next(iter(self.x_data.values())))
         self.y_fit = {label: np.empty_like(y)
-                        for label, y in self.y_data.items()}
-        self.jacobian_matrix = {label: np.empty_like(y)
+                      for label, y in self.y_data.items()}
+        self.jacobian_matrix = {label: np.empty(len(y), len(scattering_rates))
                                 for label, y in self.y_data.items()}
         if self.n_threads > 1:
-            fn = partial(self._calc_single, scattering_rates=scattering_rates)
+            fn = partial(self._calc_single_data_point, scattering_rates=scattering_rates)
             results = list(self.executor.map(fn, range(n_data)))
         else:
-            results = [self._calc_single(scattering_rates, i)
-                        for i in range(n_data)]
+            results = [self._calc_single_data_point(scattering_rates, i)
+                       for i in range(n_data)]
         for i, r in enumerate(results):
             rho, jac = r
             for label in self.y_data:
@@ -510,7 +515,8 @@ class FullScatteringFitter:
                 self.y_fit[label][i] = self._y_multiply[label] * rho[a, b]
                 self.jacobian_matrix[label][i] = jac[a, b]
 
-    def _calc_single(self, scattering_rates, index):
+    def _calc_single_data_point(self, scattering_rates, index):
+
         cond = Conductivity(self.band, scattering_rate=scattering_rates,
                             **self.params)
         x = {label: x[index] for label, x in self.x_data.items()}
@@ -529,7 +535,7 @@ class FullScatteringFitter:
         # "matrix-like" parts of Y^T dGamma/dgamma X
         term_1 = np.array([
             [alpha.T @ (Y[:, a] * X[:, b]) for b in range(X.shape[1])]
-            for a in range(Y.shape[1])])
+             for a in range(Y.shape[1])])
         # Y_pa sum_i alpha_pj X_jb
         alpha_X = alpha @ X
         term_2 = np.einsum("pa,pb->abp", Y, alpha_X)
@@ -550,10 +556,13 @@ class FullScatteringFitter:
             Y_vec = Y[i, :]
             for a in range(Y_vec.shape[1]):
                 for b in range(X_vec.shape[1]):
-                    np.add.at(
-                        jac[a, b], p, cond._jacobians*Y_vec[a]*X_vec[b]/2)
+                    np.add.at(jac[a, b], p,
+                              cond._jacobians*Y_vec[a]*X_vec[b]/2)
         jac = rho @ jac @ rho
         return e**2 / (4 * np.pi**3 * hbar) / self.band.bz_ratio / 60 * jac
+
+    def _calc_regularization(self):
+        grad_op = _calc_gradient_operator(self.band.elements[0.0])
 
 
 def _calc_gradient_operator(elements: FiniteElements):
@@ -571,12 +580,9 @@ def _calc_gradient_operator(elements: FiniteElements):
     rows = np.concatenate((i_idx.flat, k_idx.flat))
     cols = np.tile(j_idx.flat, 2)
 
-    grad_op = scipy.sparse.csr_matrix(
+    return scipy.sparse.csr_matrix(
         (weighted_diffs, (rows, cols)),
         shape=(3*len(elements.kfaces), len(elements.kpoints)))
-    if elements.band.periodic:
-        grad_op = grad_op @ elements.periodic_projector.T
-    return grad_op
 
 
 def _mean_squared_error(y_fit, y_data):
@@ -841,7 +847,7 @@ def fit_full_scattering(
         init_params, x_data, y_data, x_shift, x_normalize,
         y_shift, y_normalize, save_path, save_label,
         print_log=print_log, n_threads=n_threads)
-    x0 = np.full(len(fitter.band.kpoints), init_scattering)
+    x0 = _get_init_scatrate_fullfit(fitter.band, init_scattering)
     result = scipy.optimize.least_squares(
         fitter.residual, jac=fitter.jacobian,
         bounds=bounds, x0=x0, callback=fitter.log, **kwargs)
@@ -858,6 +864,21 @@ def fit_full_scattering(
     print(result.message)
     print("\n\n")
     return result
+
+
+def _get_init_scatrate_fullfit(surface, init_scattering):
+    if isinstance(init_scattering, Real):
+        if surface.symmetry_projector is not None:
+            return np.full(surface.n_irreducible, init_scattering)
+        else:
+            return np.full(len(surface.kpoints), init_scattering)
+    elif callable(init_scattering):
+        pass
+    elif isinstance(init_scattering, Mapping):
+        pass
+    else:
+        raise ValueError("Invalid type for init_scattering. Must be a "
+                         "real number, callable function, or mapping.")
     
 
 def _get_label_indices(labels: Collection[str]):

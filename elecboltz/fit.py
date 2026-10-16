@@ -2,6 +2,7 @@ from .bandstructure import BandStructure
 from .conductivity import Conductivity
 from .elements import FiniteElements
 from .params import easy_params, _deep_update
+from .scatrate import build_scattering_function
 
 import numpy as np
 import scipy
@@ -416,13 +417,22 @@ class FullScatteringFitter:
         self.residual_vector = None
         self.jacobian_matrix = None
 
+        self.regularization = regularization
+        if regularization > 0.0:
+            self.grad_op = _calc_gradient_operator(self.band.elements[0.0])
+
     def residual(self, scattering_rates):
         self._calculate_shared(scattering_rates)
-        return self.residual_vector
+        if self.regularization > 0.0:
+            return np.concatenate((self.residual_vector, self.reg_residual))
+        else:
+            return self.residual_vector
 
     def jacobian(self, scattering_rates):
         self._calculate_shared(scattering_rates)
-        return self.jacobian_matrix
+        if self.regularization > 0.0:
+            return np.vstack((self.jacobian_matrix,
+                              self.regularization * self.grad_op))
 
     def log(self, intermediate_result: scipy.optimize.OptimizeResult):
         self.iteration += 1
@@ -459,15 +469,17 @@ class FullScatteringFitter:
             return
 
         if self.band.symmetry is None:
-            scat = scattering_rates
+            scat_full = scattering_rates
         else:
-            scat = self.band.symmetry_projector.T @ scattering_rates
-        cond = Conductivity(self.band, scattering_rate=scat, **self.params)
+            scat_full = self.band.symmetry_projector.T @ scattering_rates
+        cond = Conductivity(
+            self.band, scattering_rate=scat_full, **self.params)
         self._calc_y_multiplier(cond)
-        self._calc_fit(scat)
+        self._calc_fit(scat_full)
         self._apply_y_shifts(cond)
         if self.regularization > 0.0:
-            self._calc_regularization()
+            self.reg_residual = \
+                self.regularization * self.grad_op @ scattering_rates
 
         y_fit = np.concatenate(list(self.y_fit.values()))
         y_data = np.concatenate(list(self.y_data.values()))
@@ -562,9 +574,6 @@ class FullScatteringFitter:
         # chain rule for drho/d(1/tau) = (1/v) drho/dgamma
         jac /= cond.elements[0.0].vmags
         return e**2 / (4 * np.pi**3 * hbar) / self.band.bz_ratio / 60 * jac
-
-    def _calc_regularization(self):
-        grad_op = _calc_gradient_operator(self.band.elements[0.0])
 
 
 def _calc_gradient_operator(elements: FiniteElements):
@@ -868,19 +877,30 @@ def fit_full_scattering(
     return result
 
 
-def _get_init_scatrate_fullfit(surface, init_scattering):
-    if isinstance(init_scattering, Real):
-        if surface.symmetry_projector is not None:
-            return np.full(surface.n_irreducible, init_scattering)
-        else:
-            return np.full(len(surface.kpoints), init_scattering)
-    elif callable(init_scattering):
-        pass
-    elif isinstance(init_scattering, Mapping):
-        pass
+def _get_init_scatrate_fullfit(band, init_scattering):
+    surface = band.elements[0.0]
+    if surface.symmetry is None:
+        n_points = len(surface.kpoints)
     else:
-        raise ValueError("Invalid type for init_scattering. Must be a "
-                         "real number, callable function, or mapping.")
+        n_points = surface.n_irreducible
+
+    if isinstance(init_scattering, Real):
+        return np.full(n_points, init_scattering)
+    else:
+        if isinstance(init_scattering, Callable):
+            func = init_scattering
+        elif isinstance(init_scattering, Mapping):
+            func = build_scattering_function(**init_scattering)
+        else:
+            raise ValueError("Invalid type for init_scattering. Must be a "
+                             "real number, callable function, or mapping.")
+        kx, ky, kz = surface.kpoints[:n_points].T
+        vx, vy, vz = band.velocity_func(kx, ky, kz)
+        energy = 0
+        temperature = 0
+        return np.array(func(
+            kx=kx, ky=ky, kz=kz, vx=vx, vy=vy, vz=vz,
+            energy=energy, E=energy, temperature=temperature, T=temperature))
     
 
 def _get_label_indices(labels: Collection[str]):

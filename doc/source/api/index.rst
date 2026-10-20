@@ -12,5 +12,6 @@ elecBoltz API reference
    params
    fit
    load
+   symmetry
    fermisurface
    elements

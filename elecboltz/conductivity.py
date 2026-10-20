@@ -99,6 +99,8 @@ class Conductivity:
     def __setattr__(self, name, value):
         if name == 'band':
             self.erase_cache()
+            for element in self._finite_elements.values():
+                element.band = value
             super().__setattr__(name, value)
         if name in ['frequency', 'scattering_rate', 'scattering_kernel']:
             self.erase_cache(elements=False, scattering=True,
@@ -109,6 +111,8 @@ class Conductivity:
                         "The scattering_rate must have the same length as "
                         "the number of kpoints in the band structure.")
                 value = np.array(value)
+            for element in self._finite_elements.values():
+                element.__setattr__(name, value)
             super().__setattr__(name, value)
         if name in ['field', 'Bamp', 'Btheta', 'Bphi']:
             self.erase_cache(elements=False, scattering=False,
@@ -123,6 +127,9 @@ class Conductivity:
                 Btheta=self.Btheta, Bphi=self.Bphi)
         else:
             super().__setattr__(name, value)
+            for element in self._finite_elements.values():
+                if hasattr(element, name):
+                    element.__setattr__(name, value)
 
     def set_field(self, field: Sequence[Real] = np.zeros(3),
                   Bamp: Real | None = None, Btheta: Real | None = None,

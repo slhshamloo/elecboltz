@@ -50,6 +50,44 @@ class FiniteElements:
         that has the face centroids touching the true iso-energy
         surface. This is closer to the true Jacobian, but it breaks
         mathematical convergence guarantees.
+    
+    Attributes
+    ----------
+    scattering_invlen
+        The inverse scattering length (gamma) at each point on the
+        iso-energy surface.
+    velocities
+        The velocities at each point on the iso-energy surface.
+    vmags
+        The magnitudes of the velocities at each point on the iso-energy
+        surface.
+    vhats
+        The unit vectors of the velocities at each point on the
+        iso-energy surface.
+    jacobians
+        The Jacobians of the iso-energy surface, which is twice the area
+        of the triangles (faces) on the surface.
+    jacobian_sums
+        The sums of the Jacobians for each point and point pair on the
+        iso-energy surface.
+    overlap_matrix
+        The overlap matrix of the finite element basis functions.
+    vhat_projections
+        The projections of the velocity unit vectors onto the finite
+        element basis functions.
+    derivative_term
+        The derivative term of the differential operator (D),
+        which depends
+        on the applied field.
+    out_scattering
+        The out-scattering term (Gamma) which depends on the scattering
+        (rate or kernel).
+    in_scattering_matrix
+        The in-scattering matrix (S) in the reduced basis of the
+        scattering kernel.
+    fem_to_kernel
+        The transformation matrix from the finite element basis to the
+        scattering kernel basis.
     """
     def __init__(self, band: BandStructure, energy: Real,
                  frequency: Real = 0, field:Sequence[Real] = (0, 0, 0),
@@ -112,6 +150,14 @@ class FiniteElements:
         self._calculate_velocity_projections(vhats)
 
     def erase_cache(self):
+        """Erase the cached finite element matrices and vectors.
+
+        This is useful for resetting the finite element discretization
+        when there is a change in the parameters, or for freeing up
+        memory when the finite element matrices are no longer needed,
+        but we still want to keep the band structure and iso-energy surface
+        around for later use.
+        """
         self.fem_to_kernel = None
         self.scattering_invlen = None
         self.in_scattering_matrix = None
@@ -156,7 +202,7 @@ class FiniteElements:
         if self.band.periodic:
             self.derivative_sums = [
                 (self.surface.periodic_projector @ derivative
-                    @ self.surface.periodic_projector.T).tocsc()
+                 @ self.surface.periodic_projector.T).tocsc()
                 for derivative in self.derivative_sums]
 
     def _calculate_velocity_projections(self, vhats):
@@ -272,8 +318,7 @@ class FiniteElements:
     
     def _calculate_kernel_quadratures(self, kernel, fem_to_kernel):
         scattering_quadratures = np.empty(
-            (kernel.coeffs.shape[0],
-                *self._quadrature_points.shape[:-1]))
+            (kernel.coeffs.shape[0], *self._quadrature_points.shape[:-1]))
         weights = quad_weights[self.quadrature_order]
         for a in range(kernel.coeffs.shape[0]):
             scattering_quadratures[a] = kernel.eval_basis(

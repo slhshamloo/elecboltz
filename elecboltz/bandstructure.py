@@ -341,7 +341,7 @@ class BandStructure:
 
         Returns
         -------
-        list of 3 objects like kx, ky, kz
+        list of 3 objects like vx, vy, vz
             The velocity vector at the given k-point in m/s.
         """
         return [vfunc(kx, ky, kz, *self.unit_cell, **self.band_params)

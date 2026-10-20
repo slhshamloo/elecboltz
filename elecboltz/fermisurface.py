@@ -85,6 +85,10 @@ class IsoEnergySurface:
         self._build_symmetry_projector(wedge_kpoints, symmetry.matrices)
 
     def sort_and_reindex(self, sort_axis):
+        """
+        Sort the k-points along a specified axis and reindex the faces
+        accordingly.
+        """
         new_order = np.argsort(self.kpoints[:, sort_axis])
         old_to_new_map = np.empty(len(new_order), dtype=int)
         old_to_new_map[new_order] = np.arange(len(new_order))
@@ -95,6 +99,15 @@ class IsoEnergySurface:
         """
         Find duplicate points on the periodic boundaries, then make the
         periodic mesh arrays.
+
+        Parameters
+        ----------
+        gvec : np.ndarray
+            The reciprocal lattice vectors of the material.
+        periodic_axes : list[int]
+            The axes along which the surface is periodic. For example,
+            if the surface is periodic along the x and y axes, then
+            ``periodic_axes`` should be ``[0, 1]``.
         """
         duplicates = dict()
         for axis in periodic_axes:

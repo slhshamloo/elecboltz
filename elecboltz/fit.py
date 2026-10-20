@@ -1,6 +1,6 @@
 from .bandstructure import BandStructure
 from .conductivity import Conductivity
-from .elements import FiniteElements
+from .fermisurface import IsoEnergySurface
 from .params import easy_params, _deep_update
 from .scatrate import build_scattering_function
 
@@ -19,6 +19,7 @@ from collections.abc import Sequence, Collection, Mapping
 from numbers import Real
 from numpy.typing import NDArray
 from scipy.constants import e, hbar, angstrom
+THz = 1e12
 
 
 class FittingRoutine:
@@ -380,16 +381,17 @@ class FullScatteringFitter:
     total_time : float
         The total time spent on the fitting routine.
     """
-    def __init__(self, init_params: Mapping,
-                 x_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
-                 y_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
-                 x_shift: Mapping[str, Real | Sequence[Real]] = None,
-                 x_normalize: Mapping[str, Real | Sequence[Real]] = None,
-                 y_shift: Mapping[str, Real | Sequence[Real]] = None,
-                 y_normalize: Mapping[str, Real | Sequence[Real]] = None,
-                 regularization: float = 0.0,
-                 save_path: str = None, save_label: str = "fit",
-                 print_log: bool = True, n_threads: int = 1):
+    def __init__(
+            self, init_params: Mapping,
+            x_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
+            y_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
+            x_shift: Mapping[str, Real | Sequence[Real]] = None,
+            x_normalize: Mapping[str, Real | Sequence[Real]] = None,
+            y_shift: Mapping[str, Real | Sequence[Real]] = None,
+            y_normalize: Mapping[str, Real | Sequence[Real]] = None,
+            regularization: float = 0.0,
+            save_path: str = None, save_label: str = "fit",
+            print_log: bool = True, n_threads: int = 1):
         self.params = easy_params(init_params)
         self.band = BandStructure(**self.params)
         self.band.discretize()
@@ -419,7 +421,7 @@ class FullScatteringFitter:
 
         self.regularization = regularization
         if regularization > 0.0:
-            self.grad_op = _calc_gradient_operator(self.band.elements[0.0])
+            self.grad_op = _calc_gradient_operator(self.band.surfaces[0.0])
 
     def residual(self, scattering_rates):
         self._calculate_shared(scattering_rates)
@@ -431,8 +433,11 @@ class FullScatteringFitter:
     def jacobian(self, scattering_rates):
         self._calculate_shared(scattering_rates)
         if self.regularization > 0.0:
-            return np.vstack((self.jacobian_matrix,
-                              self.regularization * self.grad_op))
+            return np.vstack((
+                self.jacobian_matrix,
+                (self.regularization * self.grad_op).toarray()))
+        else:
+            return self.jacobian_matrix
 
     def log(self, intermediate_result: scipy.optimize.OptimizeResult):
         self.iteration += 1
@@ -512,10 +517,11 @@ class FullScatteringFitter:
         n_data = len(next(iter(self.x_data.values())))
         self.y_fit = {label: np.empty_like(y)
                       for label, y in self.y_data.items()}
-        self.jacobian_matrix = {label: np.empty(len(y), len(scattering_rates))
-                                for label, y in self.y_data.items()}
+        self.jacobian_matrix = {
+            label: np.empty((len(y), len(scattering_rates)))
+            for label, y in self.y_data.items()}
         if self.n_threads > 1:
-            fn = partial(self._calc_single_data_point, scattering_rates=scattering_rates)
+            fn = partial(self._calc_single_data_point, scattering_rates)
             results = list(self.executor.map(fn, range(n_data)))
         else:
             results = [self._calc_single_data_point(scattering_rates, i)
@@ -525,10 +531,10 @@ class FullScatteringFitter:
             for label in self.y_data:
                 a, b = self.y_label_i[label], self.y_label_j[label]
                 self.y_fit[label][i] = self._y_multiply[label] * rho[a, b]
-                self.jacobian_matrix[label][i] = jac[a, b]
+                self.jacobian_matrix[label][i] = \
+                    self._y_multiply[label] * THz * jac[a, b]
 
     def _calc_single_data_point(self, scattering_rates, index):
-
         cond = Conductivity(self.band, scattering_rate=scattering_rates,
                             **self.params)
         x = {label: x[index] for label, x in self.x_data.items()}
@@ -538,12 +544,16 @@ class FullScatteringFitter:
         rho = np.linalg.inv(cond.sigma)
 
         transpose_solution = cond._factorization.solve(
-            cond._vhat_projections, trans='T')
-        jac = self._calc_jac(cond._jacobian_sums, transpose_solution,
-                             cond._linear_solution, cond, rho)
+            cond._finite_elements[0.0].vhat_projections, trans='T')
+        jac = self._calc_jac(
+            cond._finite_elements[0.0].jacobian_sums,
+            transpose_solution, cond._linear_solution, cond, rho)
         return rho, jac
 
     def _calc_jac(self, alpha, X, Y, cond, rho):
+        if cond.band.periodic:
+            alpha = (cond.band.periodic_projector @ alpha
+                     @ cond.band.periodic_projector.T)
         # "matrix-like" parts of Y^T dGamma/dgamma X
         term_1 = np.array([
             [alpha.T @ (Y[:, a] * X[:, b]) for b in range(X.shape[1])]
@@ -560,40 +570,62 @@ class FullScatteringFitter:
         i_idx = self.band.kfaces[:, 0]
         j_idx = self.band.kfaces[:, 1]
         k_idx = self.band.kfaces[:, 2]
+        if cond.band.periodic:
+            # The projector has shape (n_periodic, n_full), with one
+            # nonzero per full-mesh column. Its row is that column's
+            # periodic-mesh index.
+            projector = cond.band.periodic_projector.tocoo()
+            full_to_periodic = np.empty(projector.shape[1], dtype=int)
+            full_to_periodic[projector.col] = projector.row
+            i_idx = full_to_periodic[i_idx]
+            j_idx = full_to_periodic[j_idx]
+            k_idx = full_to_periodic[k_idx]
+
         for perm in [(i_idx, j_idx, k_idx), (j_idx, k_idx, i_idx),
-                        (k_idx, i_idx, j_idx)]:
+                     (k_idx, i_idx, j_idx)]:
             i, j, p = perm
             # sum_ij (alpha_ijp/2) Y_ia X_jb
             X_vec = X[j, :]
             Y_vec = Y[i, :]
             for a in range(Y_vec.shape[1]):
                 for b in range(X_vec.shape[1]):
-                    np.add.at(jac[a, b], p,
-                              cond._jacobians*Y_vec[a]*X_vec[b]/2)
-        jac = rho @ jac @ rho
+                    np.add.at(
+                        jac[a, b], p, (cond._finite_elements[0.0].jacobians
+                                       * Y_vec[:, a] * X_vec[:, b] / 2))
+        jac = np.einsum("ai,ijp,jb->abp", rho, jac, rho)
+        if cond.band.periodic:
+            jac_periodic = jac
+            jac = np.zeros((jac.shape[0], jac.shape[1], len(cond.band.kpoints)))
+            for a in range(jac.shape[0]):
+                for b in range(jac.shape[1]):
+                    jac[a, b] = (cond.band.periodic_projector.T
+                                 @ jac_periodic[a, b])
         # chain rule for drho/d(1/tau) = (1/v) drho/dgamma
-        jac /= cond.elements[0.0].vmags
+        jac /= cond._finite_elements[0.0].vmags
         return e**2 / (4 * np.pi**3 * hbar) / self.band.bz_ratio / 60 * jac
 
 
-def _calc_gradient_operator(elements: FiniteElements):
-    triangle_points = elements.kpoints[elements.kfaces] / angstrom
+def _calc_gradient_operator(surface: IsoEnergySurface):
+    triangle_points = surface.kpoints[surface.kfaces] / angstrom
+    jacobians = np.linalg.norm(
+        np.cross(triangle_points[:, 1] - triangle_points[:, 0],
+                 triangle_points[:, 2] - triangle_points[:, 0]),
+        axis=-1)
     diffs = triangle_points - np.roll(triangle_points, -2, axis=1)
-    weights = np.sqrt(2 * elements.jacobians)
+    weights = np.sqrt(2*jacobians)
     weighted_diffs = diffs / weights[:, np.newaxis, np.newaxis]
     # Reorder (faces, vertices, dims) -> (faces, dims, vertices) and flatten.
     # For each (face, dim), lists the 3 values for vertices [j, k, i].
     weighted_diffs = weighted_diffs.transpose(0, 2, 1).flatten()
 
-    i_idx = elements.kfaces
-    j_idx = np.roll(elements.kfaces, -1, axis=1)
-    k_idx = np.roll(elements.kfaces, -2, axis=1)
-    rows = np.concatenate((i_idx.flat, k_idx.flat))
-    cols = np.tile(j_idx.flat, 2)
+    j_idx = np.roll(surface.kfaces, -1, axis=1)
+    n_faces = len(surface.kfaces)
+    rows = np.repeat(np.arange(3*n_faces), 3)
+    cols = np.tile(j_idx, (1, 3)).ravel()
 
     return scipy.sparse.csr_matrix(
         (weighted_diffs, (rows, cols)),
-        shape=(3*len(elements.kfaces), len(elements.kpoints)))
+        shape=(3*n_faces, len(surface.kpoints)))
 
 
 def _mean_squared_error(y_fit, y_data):
@@ -733,7 +765,7 @@ def fit_model(x_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
         x_string = x_label if isinstance(x_label, str) else "_".join(x_label)
         y_string = y_label if isinstance(y_label, str) else "_".join(y_label)
         save_label = f"{y_string}_{x_string}"
-    
+
     update_keys = _extract_flat_keys(bounds, bounds=True)
     bounds = [_extract_flat_value(bounds, key) for key in update_keys]
     x0 = [_extract_flat_value(init_params, key) for key in update_keys]
@@ -770,6 +802,7 @@ def fit_full_scattering(
         y_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
         init_params: Mapping, init_scattering: float = 1.0,
         bounds: Sequence[Sequence] | Sequence = (0, np.inf),
+        regularization: Real = 0.0,
         x_shift: Mapping = None, x_normalize: Mapping = None,
         y_shift: Mapping = None, y_normalize: Mapping = None,
         save_path: str = None, save_label: str = None,
@@ -803,10 +836,14 @@ def fit_full_scattering(
         and temperature (or T), note that all of these parameters are
         optional and the function can take any subset of them, as long
         as the names match, and also the function must collect extra
-        keyword arguments (``**kwargs``) to avoid errors; or a mapping
+        keyword arguments (``**kwargs``) to avoid errors; a mapping
         of a mapping of the form
         ``{'scattering_model: {...}, 'scattering_params: {...}}``
-        which is the same as `elecboltz.params.easy_params` accepts.
+        which is the same as `elecboltz.params.easy_params` accepts;
+        or an array of real numbers which should match the number of
+        points in the discretization of the Fermi ``surface`` of the
+        `elecboltz.bandstructure.BandStructure` model made from the
+        parameters.
     bounds
         Bounds for the scattering rates. This would typically be a
         single sequence of the form (min, max) to set the boundaries
@@ -849,37 +886,39 @@ def fit_full_scattering(
         Additional keyword arguments passed to the `optimizer`
     """
     if save_label is None:
-        x_string = x_label if isinstance(x_label, str) else "_".join(x_label)
-        y_string = y_label if isinstance(y_label, str) else "_".join(y_label)
+        x_labels = list(x_data)
+        y_labels = list(y_data)
+        x_string = x_labels[0] if len(x_labels) == 1 else "_".join(x_labels)
+        y_string = y_labels[0] if len(y_labels) == 1 else "_".join(y_labels)
         save_label = f"{y_string}_{x_string}"
-
     begin_time = datetime.now()
     fitter = FullScatteringFitter(
         init_params, x_data, y_data, x_shift, x_normalize,
-        y_shift, y_normalize, save_path, save_label,
+        y_shift, y_normalize, regularization, save_path, save_label,
         print_log=print_log, n_threads=n_threads)
     x0 = _get_init_scatrate_fullfit(fitter.band, init_scattering)
     result = scipy.optimize.least_squares(
         fitter.residual, jac=fitter.jacobian,
         bounds=bounds, x0=x0, callback=fitter.log, **kwargs)
-    result['fermi_surface_vertices'] = fitter.band.kpoints
-    result['fermi_surface_faces'] = fitter.band.kfaces
-    result['scattering_rates'] = result.x
-    result.pop('x')
     end_time = datetime.now()
-
-    result['begin_time'] = begin_time.isoformat()
-    result['end_time'] = end_time.isoformat()
-    result['runtime'] = (end_time - begin_time).total_seconds()
-
     print(result.message)
     print("\n\n")
+
+    if fitter.band.symmetry is not None:
+        result['scattering_rate_irreducible'] = result.x
+        result['scattering_rate'] = fitter.band.symmetry_projector.T @ result.x
+    else:
+        result['scattering_rate'] = result.x
+    result.pop('x', None)
+    _save_full_scattering_result(
+        result, init_params, init_scattering,
+        begin_time, end_time, save_path, save_label)
     return result
 
 
 def _get_init_scatrate_fullfit(band, init_scattering):
-    surface = band.elements[0.0]
-    if surface.symmetry is None:
+    surface = band.surfaces[0.0]
+    if band.symmetry is None:
         n_points = len(surface.kpoints)
     else:
         n_points = surface.n_irreducible
@@ -1110,16 +1149,11 @@ def _save_fit_result(result, init_params, update_keys, begin_time,
                      multi_params=None, multi_params_labels=None):
     result = _result_to_serializable(result)
     result['fit_params'] = _build_params_from_flat(update_keys, result['x'])
-    result['residual'] = result.get('fun', None)
-    result['evaluations'] = result.get('nfev', None)
-    result['iterations'] = result.get('nit', None)
-    result['jacobian'] = result.get('jac', None)
+    result['residual'] = result.pop('fun', None)
+    result['evaluations'] = result.pop('nfev', None)
+    result['iterations'] = result.pop('nit', None)
+    result['jacobian'] = result.pop('jac', None)
     result.pop('x', None)
-    result.pop('population', None)
-    result.pop('population_energies', None)
-    result.pop('fun', None)
-    result.pop('nfev', None)
-    result.pop('nit', None)
 
     result['init_params'] = _build_params_from_flat(
         update_keys, [_extract_flat_value(init_params, key)
@@ -1163,6 +1197,31 @@ def _save_fit_result(result, init_params, update_keys, begin_time,
             path = Path(save_path) / f"{save_label}.json"
             with path.open('w') as f:
                 json.dump(result, f, indent=2)
+    return result
+
+
+def _save_full_scattering_result(
+        result, init_params, init_scattering,
+        begin_time, end_time, save_path, save_label):
+    result['iterations'] = result.pop('nit', None)
+    result['evaluations'] = result.pop('nfev', None)
+    result['jacobian_evaluations'] = result.pop('njev', None)
+    result['init_params'] = init_params
+    result['init_scattering'] = init_scattering
+
+    result.pop('fun', None)
+    result.pop('jac', None)
+    result.pop('active_mask', None)
+
+    result['begin_time'] = begin_time.isoformat()
+    result['end_time'] = end_time.isoformat()
+    result['runtime'] = (end_time - begin_time).total_seconds()
+
+    result = _result_to_serializable(result)
+    if save_path is not None:
+        path = Path(save_path) / f"{save_label}.json"
+        with path.open('w') as f:
+            json.dump(result, f, indent=2)
     return result
 
 

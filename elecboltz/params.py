@@ -57,8 +57,13 @@ def easy_params(params: dict) -> dict:
     if 'load_fit' in params:
         with open(params['load_fit'], 'r') as f:
             all_params = json.load(f)
-            _deep_update(params, all_params['fixed_params'])
-            _deep_update(params, all_params['fit_params'])
+            if 'fixed_params' in all_params:
+                _deep_update(params, all_params['fixed_params'])
+            if 'fit_params' in all_params:
+                _deep_update(params, all_params['fit_params'])
+            else: # Full scattering rate fit
+                _deep_update(params, all_params['init_params'])
+                params['scattering_rate'] = all_params['scattering_rate']
     new_params = deepcopy(params)
     # unit cell dimensions indicated by axis names
     if 'a' in params:
@@ -85,7 +90,7 @@ def easy_params(params: dict) -> dict:
         new_params['dispersion'] = get_tight_binding_dispersion(
             new_params['band_params'])
     # automatically build the scattering function from named parameters
-    if 'scattering_params' in params:
+    if 'scattering_params' in params and 'scattering_rate' not in params:
         if 'scattering_models' not in params:
             new_params['scattering_models'] = ['isotropic']
         new_params['scattering_rate'] = build_scattering_function(

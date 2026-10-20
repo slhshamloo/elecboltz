@@ -89,6 +89,8 @@ class Conductivity:
         self.quadrature_order = quadrature_order
         # avoid triggering setattr in the constructor
         super().__setattr__('band', band)
+        scattering_rate = _handle_scattering_array(
+            scattering_rate, band.kpoints)
         super().__setattr__('scattering_rate', scattering_rate)
         super().__setattr__('scattering_kernel', scattering_kernel)
         super().__setattr__('frequency', frequency)
@@ -105,12 +107,8 @@ class Conductivity:
         if name in ['frequency', 'scattering_rate', 'scattering_kernel']:
             self.erase_cache(elements=False, scattering=True,
                              derivative=False)
-            if name == 'scattering_rate' and isinstance(value, Sequence):
-                if len(self.band.kpoints) != len(value):
-                    raise ValueError(
-                        "The scattering_rate must have the same length as "
-                        "the number of kpoints in the band structure.")
-                value = np.array(value)
+            if name == 'scattering_rate':
+                value = _handle_scattering_array(value, self.band.kpoints)
             for element in self._finite_elements.values():
                 element.__setattr__(name, value)
             super().__setattr__(name, value)
@@ -313,6 +311,17 @@ class Conductivity:
             scattering_kernel=self.scattering_kernel,
             quadrature_order=self.quadrature_order,
             correct_curvature=self.correct_curvature)
+
+
+def _handle_scattering_array(scattering_rate, kpoints):
+    if isinstance(scattering_rate, Sequence):
+        if len(kpoints) != len(scattering_rate):
+            raise ValueError(
+                "The scattering_rate must have the same length as "
+                "the number of kpoints in the band structure.")
+        scattering_rate = np.array(scattering_rate)
+    return scattering_rate
+
 
 def solve_sparse_plus_lowrank(
         A, C, U, V, b, sparse_solver=scipy.sparse.linalg.spsolve):

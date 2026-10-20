@@ -366,9 +366,6 @@ class FullScatteringFitter:
         Label of the results (used as file names).
     print_log
         If True, the fitting progress will be printed to the console.
-    n_threads
-        The number of threads to use for parallelizing the fitting
-        routine. If 1, no parallelization is done.
     
     Attributes
     ----------
@@ -389,9 +386,8 @@ class FullScatteringFitter:
             x_normalize: Mapping[str, Real | Sequence[Real]] = None,
             y_shift: Mapping[str, Real | Sequence[Real]] = None,
             y_normalize: Mapping[str, Real | Sequence[Real]] = None,
-            regularization: float = 0.0,
-            save_path: str = None, save_label: str = "fit",
-            print_log: bool = True, n_threads: int = 1):
+            regularization: float = 0.0, save_path: str = None,
+            save_label: str = "fit", print_log: bool = True):
         self.params = easy_params(init_params)
         self.band = BandStructure(**self.params)
         self.band.discretize()
@@ -411,9 +407,6 @@ class FullScatteringFitter:
         self.iteration = 0
         self.last_time = time()
         self.total_time = 0.0
-        self.n_threads = n_threads
-        if self.n_threads > 1:
-            self.executor = ThreadPoolExecutor(max_workers=self.n_threads)
 
         self._scat_cache = None
         self.residual_vector = None
@@ -520,12 +513,8 @@ class FullScatteringFitter:
         self.jacobian_matrix = {
             label: np.empty((len(y), len(scattering_rates)))
             for label, y in self.y_data.items()}
-        if self.n_threads > 1:
-            fn = partial(self._calc_single_data_point, scattering_rates)
-            results = list(self.executor.map(fn, range(n_data)))
-        else:
-            results = [self._calc_single_data_point(scattering_rates, i)
-                       for i in range(n_data)]
+        results = [self._calc_single_data_point(scattering_rates, i)
+                   for i in range(n_data)]
         for i, r in enumerate(results):
             rho, jac = r
             for label in self.y_data:
@@ -806,7 +795,7 @@ def fit_full_scattering(
         x_shift: Mapping = None, x_normalize: Mapping = None,
         y_shift: Mapping = None, y_normalize: Mapping = None,
         save_path: str = None, save_label: str = None,
-        print_log: bool = True, n_threads: int = 1, **kwargs):
+        print_log: bool = True, **kwargs):
     """Convenience function to set up and run a fitting routine.
 
     This uses the `optimizer` (assumed to behave like a SciPy optimizer)
@@ -895,7 +884,7 @@ def fit_full_scattering(
     fitter = FullScatteringFitter(
         init_params, x_data, y_data, x_shift, x_normalize,
         y_shift, y_normalize, regularization, save_path, save_label,
-        print_log=print_log, n_threads=n_threads)
+        print_log=print_log)
     x0 = _get_init_scatrate_fullfit(fitter.band, init_scattering)
     result = scipy.optimize.least_squares(
         fitter.residual, jac=fitter.jacobian,

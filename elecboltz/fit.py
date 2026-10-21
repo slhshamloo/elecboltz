@@ -487,9 +487,16 @@ class FullScatteringFitter:
 
     def _calc_y_multiplier(self, cond):
         if self.x_normalize is not None:
-            y0 = _calc_y(cond, self.x_normalize, self.y_data,
-                         self.y_name, self.y_label_i, self.y_label_j)
-            self._y_multiply = {label: 1.0 / y0[label] for label in y0}
+            self.y0 = _calc_y(cond, self.x_normalize, self.y_data,
+                              self.y_name, self.y_label_i, self.y_label_j)
+            transpose_solution = cond._factorization.solve(
+                cond._finite_elements[0.0].vhat_projections, trans='T')
+            self.j0 = self._calc_jac(
+                cond._finite_elements[0.0].jacobian_sums,
+                cond._linear_solution, transpose_solution, cond,
+                np.linalg.inv(cond.sigma))
+            self._y_multiply = {label: 1.0 / self.y0[label]
+                                for label in self.y0}
         else:
             self._y_multiply = {label: 1.0 for label in self.y_data}
         if self.y_normalize is not None:
@@ -523,7 +530,8 @@ class FullScatteringFitter:
                 a, b = self.y_label_i[label], self.y_label_j[label]
                 self.y_fit[label][i] = self._y_multiply[label] * rho[a, b]
                 self.jacobian_matrix[label][i] = \
-                    self._y_multiply[label] * THz * jac[a, b]
+                    self._y_multiply[label] * THz * (
+                        jac[a, b] - rho[a, b]/self.y0[label]*self.j0[a, b])
 
     def _calc_single_data_point(self, scattering_rates, index):
         cond = Conductivity(self.band, scattering_rate=scattering_rates,

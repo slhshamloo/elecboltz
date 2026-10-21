@@ -448,7 +448,7 @@ class FullScatteringFitter:
         log_message += f"Mean: {x_mean:.4g}, Std: {x_std:.4g}, " \
                        f"Min: {x_min:.4g}, Max: {x_max:.4g}\n"
 
-        log_message += "Iteration Runtime: "
+        log_message += "\nIteration Runtime: "
         log_message += _get_hour_minute_second_string(iter_time) + "\n"
         log_message += "Total Runtime: "
         log_message += _get_hour_minute_second_string(self.total_time) + "\n\n"
@@ -473,7 +473,7 @@ class FullScatteringFitter:
         cond = Conductivity(
             self.band, scattering_rate=scat_full, **self.params)
         self._calc_y_multiplier(cond)
-        self._calc_fit(scat_full)
+        self._calc_fit(scat_full, len(scattering_rates))
         self._apply_y_shifts(cond)
         if self.regularization > 0.0:
             self.reg_residual = \
@@ -488,7 +488,7 @@ class FullScatteringFitter:
     def _calc_y_multiplier(self, cond):
         if self.x_normalize is not None:
             y0 = _calc_y(cond, self.x_normalize, self.y_data,
-                            self.y_name, self.y_label_i, self.y_label_j)
+                         self.y_name, self.y_label_i, self.y_label_j)
             self._y_multiply = {label: 1.0 / y0[label] for label in y0}
         else:
             self._y_multiply = {label: 1.0 for label in self.y_data}
@@ -506,12 +506,14 @@ class FullScatteringFitter:
             for label in self.y_fit:
                 self.y_fit[label] += self.y_shift[label]
 
-    def _calc_fit(self, scattering_rates):
+    def _calc_fit(self, scattering_rates, n_irr_scat=None):
         n_data = len(next(iter(self.x_data.values())))
+        if n_irr_scat is None:
+            n_irr_scat = len(scattering_rates)
         self.y_fit = {label: np.empty_like(y)
                       for label, y in self.y_data.items()}
         self.jacobian_matrix = {
-            label: np.empty((len(y), len(scattering_rates)))
+            label: np.empty((len(y), n_irr_scat))
             for label, y in self.y_data.items()}
         results = [self._calc_single_data_point(scattering_rates, i)
                    for i in range(n_data)]
@@ -536,13 +538,13 @@ class FullScatteringFitter:
             cond._finite_elements[0.0].vhat_projections, trans='T')
         jac = self._calc_jac(
             cond._finite_elements[0.0].jacobian_sums,
-            transpose_solution, cond._linear_solution, cond, rho)
+            cond._linear_solution, transpose_solution, cond, rho)
         return rho, jac
 
     def _calc_jac(self, alpha, X, Y, cond, rho):
         if cond.band.periodic:
-            alpha = (cond.band.periodic_projector @ alpha
-                     @ cond.band.periodic_projector.T)
+            X = cond.band.periodic_projector.T @ X
+            Y = cond.band.periodic_projector.T @ Y
         # "matrix-like" parts of Y^T dGamma/dgamma X
         term_1 = np.array([
             [alpha.T @ (Y[:, a] * X[:, b]) for b in range(X.shape[1])]
@@ -559,19 +561,9 @@ class FullScatteringFitter:
         i_idx = self.band.kfaces[:, 0]
         j_idx = self.band.kfaces[:, 1]
         k_idx = self.band.kfaces[:, 2]
-        if cond.band.periodic:
-            # The projector has shape (n_periodic, n_full), with one
-            # nonzero per full-mesh column. Its row is that column's
-            # periodic-mesh index.
-            projector = cond.band.periodic_projector.tocoo()
-            full_to_periodic = np.empty(projector.shape[1], dtype=int)
-            full_to_periodic[projector.col] = projector.row
-            i_idx = full_to_periodic[i_idx]
-            j_idx = full_to_periodic[j_idx]
-            k_idx = full_to_periodic[k_idx]
-
         for perm in [(i_idx, j_idx, k_idx), (j_idx, k_idx, i_idx),
-                     (k_idx, i_idx, j_idx)]:
+                     (k_idx, i_idx, j_idx), (j_idx, i_idx, k_idx),
+                     (i_idx, k_idx, j_idx), (k_idx, j_idx, i_idx)]:
             i, j, p = perm
             # sum_ij (alpha_ijp/2) Y_ia X_jb
             X_vec = X[j, :]
@@ -582,16 +574,17 @@ class FullScatteringFitter:
                         jac[a, b], p, (cond._finite_elements[0.0].jacobians
                                        * Y_vec[:, a] * X_vec[:, b] / 2))
         jac = np.einsum("ai,ijp,jb->abp", rho, jac, rho)
-        if cond.band.periodic:
-            jac_periodic = jac
-            jac = np.zeros((jac.shape[0], jac.shape[1], len(cond.band.kpoints)))
-            for a in range(jac.shape[0]):
-                for b in range(jac.shape[1]):
-                    jac[a, b] = (cond.band.periodic_projector.T
-                                 @ jac_periodic[a, b])
         # chain rule for drho/d(1/tau) = (1/v) drho/dgamma
         jac /= cond._finite_elements[0.0].vmags
-        return e**2 / (4 * np.pi**3 * hbar) / self.band.bz_ratio / 60 * jac
+        jac *= e**2 / (4 * np.pi**3 * hbar) / self.band.bz_ratio / 60
+        if cond.band.symmetry is not None:
+            jac_full = jac
+            jac = np.empty((*jac.shape[:-1],
+                            cond.band.symmetry_projector.shape[0]))
+            for a in range(jac.shape[0]):
+                for b in range(jac.shape[1]):
+                    jac[a, b] = cond.band.symmetry_projector @ jac_full[a, b]
+        return jac
 
 
 def _calc_gradient_operator(surface: IsoEnergySurface):
@@ -612,9 +605,11 @@ def _calc_gradient_operator(surface: IsoEnergySurface):
     rows = np.repeat(np.arange(3*n_faces), 3)
     cols = np.tile(j_idx, (1, 3)).ravel()
 
-    return scipy.sparse.csr_matrix(
-        (weighted_diffs, (rows, cols)),
-        shape=(3*n_faces, len(surface.kpoints)))
+    grad_op = scipy.sparse.csr_matrix((weighted_diffs, (rows, cols)),
+                                      shape=(3*n_faces, len(surface.kpoints)))
+    if surface.symmetry_projector is not None:
+        grad_op = grad_op @ surface.symmetry_projector.T
+    return grad_op
 
 
 def _mean_squared_error(y_fit, y_data):

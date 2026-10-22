@@ -7,8 +7,6 @@ from .scatrate import build_scattering_function
 import numpy as np
 import scipy
 import json
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 from datetime import datetime
 from time import time
 from copy import deepcopy
@@ -890,8 +888,8 @@ def fit_full_scattering(
         print_log=print_log)
     x0 = _get_init_scatrate_fullfit(fitter.band, init_scattering)
     result = scipy.optimize.least_squares(
-        fitter.residual, jac=fitter.jacobian,
-        bounds=bounds, x0=x0, callback=fitter.log, **kwargs)
+        fitter.residual, jac=fitter.jacobian, x0=x0, bounds=bounds,
+        x_scale='jac', callback=fitter.log, **kwargs)
     end_time = datetime.now()
     print(result.message)
     print("\n\n")

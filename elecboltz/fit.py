@@ -427,7 +427,8 @@ class FullScatteringFitter:
         self._calculate_shared(scattering_rates)
         if self.regularization > 0.0:
             return scipy.sparse.vstack((
-                self.jacobian_matrix, (self.regularization * self.grad_op)))
+                self.jacobian_matrix,
+                (self.regularization/1000 * self.grad_op)))
         else:
             return self.jacobian_matrix
 
@@ -495,7 +496,7 @@ class FullScatteringFitter:
         self._apply_y_shifts(cond)
         if self.regularization > 0.0:
             self.reg_residual = \
-                self.regularization * self.grad_op @ scattering_rates
+                self.regularization/1000 * self.grad_op @ scattering_rates
 
         y_fit = np.concatenate(list(self.y_fit.values()))
         y_data = np.concatenate(list(self.y_data.values()))

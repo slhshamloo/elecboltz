@@ -357,6 +357,8 @@ class FullScatteringFitter:
         provided). The mapping must have the same structure as
         ``y_data``, but with single values instead of arrays as the
         values.
+    regularization
+        The regularization strength for the fitting routine.
     save_path
         The directory where the fitting logs will be saved. If not
         provided, logs will not be saved.
@@ -791,7 +793,7 @@ def fit_full_scattering(
         y_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
         init_params: Mapping, init_scattering: float = 1.0,
         bounds: Sequence[Sequence] | Sequence = (0, np.inf),
-        regularization: Real = 0.0,
+        regularization: Sequence[Real] | Real = 0.0,
         x_shift: Mapping = None, x_normalize: Mapping = None,
         y_shift: Mapping = None, y_normalize: Mapping = None,
         save_path: str = None, save_label: str = None,
@@ -859,6 +861,11 @@ def fit_full_scattering(
         ``x_normalize`` is provided). The mapping must have the same
         structure as ``y_data``, but with single values instead of
         arrays as the values.
+    regularization
+        The regularization parameter(s) to use. If multiple values are
+        provided, multiple fits will be performed sequentially with
+        the results of the previous fit used as the initial guess for
+        the next fit.
     loss
         A function that takes the fit and data y values, and returns a
         scalar loss value. By default, the mean absolute error is used.
@@ -881,21 +888,32 @@ def fit_full_scattering(
         y_string = y_labels[0] if len(y_labels) == 1 else "_".join(y_labels)
         save_label = f"{y_string}_{x_string}"
     begin_time = datetime.now()
+    reg = (regularization[0] if isinstance(regularization, Sequence)
+           else regularization)
     fitter = FullScatteringFitter(
         init_params, x_data, y_data, x_shift, x_normalize,
-        y_shift, y_normalize, regularization, save_path, save_label,
+        y_shift, y_normalize, reg, save_path, save_label,
         print_log=print_log)
     x0 = _get_init_scatrate_fullfit(fitter.band, init_scattering)
     for tol in ['ftol', 'xtol', 'gtol']:
         if tol not in kwargs:
             kwargs[tol] = 1e-5
+
     result = scipy.optimize.least_squares(
         fitter.residual, jac=fitter.jacobian, x0=x0, bounds=bounds,
         x_scale='jac', callback=fitter.log, **kwargs)
+    if isinstance(regularization, Sequence):
+        for reg in regularization[1:]:
+            print(result.message)
+            print("\n")
+            fitter.regularization = reg
+            result = scipy.optimize.least_squares(
+                fitter.residual, jac=fitter.jacobian, x0=result.x,
+                bounds=bounds, x_scale='jac', callback=fitter.log, **kwargs)
+
     end_time = datetime.now()
     print(result.message)
     print("\n\n")
-
     if fitter.band.symmetry is not None:
         result['scattering_rate_irreducible'] = result.x
         result['scattering_rate'] = fitter.band.symmetry_projector.T @ result.x

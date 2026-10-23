@@ -886,6 +886,9 @@ def fit_full_scattering(
         y_shift, y_normalize, regularization, save_path, save_label,
         print_log=print_log)
     x0 = _get_init_scatrate_fullfit(fitter.band, init_scattering)
+    for tol in ['ftol', 'xtol', 'gtol']:
+        if tol not in kwargs:
+            kwargs[tol] = 1e-5
     result = scipy.optimize.least_squares(
         fitter.residual, jac=fitter.jacobian, x0=x0, bounds=bounds,
         x_scale='jac', callback=fitter.log, **kwargs)

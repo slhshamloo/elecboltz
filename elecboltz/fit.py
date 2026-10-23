@@ -431,6 +431,25 @@ class FullScatteringFitter:
         else:
             return self.jacobian_matrix
 
+    def reweigh_regularization(self, scattering_rates):
+        """Reweigh the regularization term based on the
+        current scattering rates.
+        
+        This is useful for preserving sharp features in the scattering
+        rates while still smoothing out noise.
+
+        Parameters
+        ----------
+        scattering_rates : NDArray[np.float64]
+            The current scattering rates.
+        """
+        grad_applied = self.grad_op @ scattering_rates
+        grad_norm = np.linalg.norm(grad_applied.reshape(-1, 3), axis=1)
+        sharpness = np.percentile(grad_norm, 80)
+        weight_triangle = 1.0 / np.sqrt(1.0 + (grad_norm/sharpness)**2)
+        weight_rows = np.repeat(weight_triangle, 3)
+        self.grad_op = scipy.sparse.diags(weight_rows) @ self.grad_op
+
     def log(self, intermediate_result: scipy.optimize.OptimizeResult):
         self.iteration += 1
         now = time()
@@ -865,7 +884,11 @@ def fit_full_scattering(
         The regularization parameter(s) to use. If multiple values are
         provided, multiple fits will be performed sequentially with
         the results of the previous fit used as the initial guess for
-        the next fit.
+        the next fit. Each step, the regularization is weighted to
+        preserve the sharp features of the last step, while
+        smoothing out the noise. Therefor, repeating a step
+        will actually change the result, and it is recommended
+        to repeat the last step.
     loss
         A function that takes the fit and data y values, and returns a
         scalar loss value. By default, the mean absolute error is used.
@@ -906,6 +929,7 @@ def fit_full_scattering(
         for reg in regularization[1:]:
             print(result.message)
             print("\n")
+            fitter.reweigh_regularization(result.x)
             fitter.regularization = reg
             result = scipy.optimize.least_squares(
                 fitter.residual, jac=fitter.jacobian, x0=result.x,
@@ -1189,8 +1213,10 @@ def _save_fit_result(result, init_params, update_keys, begin_time,
         for i in range(multi_param_length):
             multi_result = deepcopy(result)
             for multi_param in multi_params:
-                value = _extract_flat_value(result['fit_params'], multi_param)[i]
-                _update_flat_value(multi_result['fit_params'], multi_param, value)
+                value = _extract_flat_value(
+                    result['fit_params'], multi_param)[i]
+                _update_flat_value(
+                    multi_result['fit_params'], multi_param, value)
             if multi_params_labels is not None:
                 label = multi_params_labels[i]
             else:

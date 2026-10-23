@@ -424,9 +424,8 @@ class FullScatteringFitter:
     def jacobian(self, scattering_rates):
         self._calculate_shared(scattering_rates)
         if self.regularization > 0.0:
-            return np.vstack((
-                self.jacobian_matrix,
-                (self.regularization * self.grad_op).toarray()))
+            return scipy.sparse.vstack((
+                self.jacobian_matrix, (self.regularization * self.grad_op)))
         else:
             return self.jacobian_matrix
 

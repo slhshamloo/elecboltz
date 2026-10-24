@@ -43,6 +43,10 @@ class FittingRoutine:
         sequences, where each sequence corresponds to a different
         parameter to be fitted,
         e.g. ``{'field': [[0.5, 1.5, 2.5], [0.6, 1.6, 2.6]]}``.
+        Alternatively, a sequence of mappings can be provided to combine
+        multiple datasets with shared parameters. The corresponding
+        ``x_data`` and ``y_data`` mappings are paired by position, and
+        each dataset may contain a different number of points.
     y_data
         The dependent variable data (e.g. conductivity). The name of
         the variable is mapped to the data, e.g.
@@ -54,19 +58,30 @@ class FittingRoutine:
         collection of sequences, where each sequence corresponds to
         a different parameter to be fitted, e.g.
         ``{'rho_zz': [[1.1, 2.4, 3.8], [1.2, 2.5, 3.9]]}``.
+        Alternatively, a sequence of mappings can be provided to combine
+        multiple datasets with shared parameters. The loss is calculated
+        using the concatenated processed values from all datasets.
     x_shift
         If provided, the y values will be shifted by the y value at
-        this x point.
+        this x point. For multiple datasets, provide one mapping or
+        ``None`` per dataset; ``None`` disables this operation for that
+        dataset.
     x_normalize
         If provided, the y values will be normalized by the y value
         at this x point.  Note that shifts are applied before
-        normalization.
+        normalization. For multiple datasets, provide one mapping or
+        ``None`` per dataset; ``None`` disables this operation for that
+        dataset.
     y_shift
-        The y values will be normalized to this value
-        (if ``x_normalize`` is provided).
+        The y values will be shifted to this value
+        (if ``x_shift`` is provided). For multiple datasets, provide one
+        mapping or ``None`` per dataset; ``None`` disables this operation
+        for that dataset.
     y_normalize
-        The y values will be shifted to this value (if ``x_shift``
-        is provided).
+        The y values will be normalized to this value
+        (if ``x_normalize`` is provided). For multiple datasets, provide
+        one mapping or ``None`` per dataset; ``None`` disables this
+        operation for that dataset.
     loss
         A function that takes the fit and data y values, and
         returns a scalar loss value. By default, the mean absolute
@@ -125,12 +140,12 @@ class FittingRoutine:
         The total time spent on the fitting routine.
     """
     def __init__(self, init_params: Mapping, param_keys: Sequence[str],
-                 x_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
-                 y_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
-                 x_shift: Mapping[str, Real | Sequence[Real]] = None,
-                 x_normalize: Mapping[str, Real | Sequence[Real]] = None,
-                 y_shift: Mapping[str, Real | Sequence[Real]] = None,
-                 y_normalize: Mapping[str, Real | Sequence[Real]] = None,
+                 x_data: Mapping | Sequence[Mapping],
+                 y_data: Mapping | Sequence[Mapping],
+                 x_shift: Mapping | Sequence[Mapping] = None,
+                 x_normalize: Mapping | Sequence[Mapping] = None,
+                 y_shift: Mapping | Sequence[Mapping] = None,
+                 y_normalize: Mapping | Sequence[Mapping] = None,
                  loss: Callable = lambda y_fit, y_data: np.mean(
                      np.abs(y_fit - y_data)),
                  postprocess: Callable = lambda x, y: y, save_path: str = None,
@@ -142,12 +157,24 @@ class FittingRoutine:
         if multi_params:
             self._init_params_multi = deepcopy(init_params)
         self.param_keys = param_keys
-        self.x_data = x_data
-        self.y_data = y_data
-        self.x_shift = x_shift
-        self.x_normalize = x_normalize
-        self.y_shift = y_shift
-        self.y_normalize = y_normalize
+        self.x_data_sets = _normalize_data_sets(x_data, "x_data")
+        self.y_data_sets = _normalize_data_sets(y_data, "y_data")
+        _validate_data_sets(self.x_data_sets, self.y_data_sets)
+        self.x_data = self.x_data_sets[0]
+        self.y_data = self.y_data_sets[0]
+        self.x_shift = _normalize_optional_data_sets(
+            x_shift, len(self.x_data_sets), "x_shift")
+        self.x_normalize = _normalize_optional_data_sets(
+            x_normalize, len(self.x_data_sets), "x_normalize")
+        self.y_shift = _normalize_optional_data_sets(
+            y_shift, len(self.x_data_sets), "y_shift")
+        self.y_normalize = _normalize_optional_data_sets(
+            y_normalize, len(self.x_data_sets), "y_normalize")
+        if multi_params and (len(self.x_data_sets) > 1 or
+                             len(self.y_data_sets) > 1):
+            raise ValueError(
+                "Combining dataset mappings with multi_params is not "
+                "supported; use the existing nested mapping format.")
         self.loss = loss
         self.postprocess = postprocess
         self.save_path = save_path
@@ -229,36 +256,44 @@ class FittingRoutine:
         for key, value in zip(self.param_keys, param_values):
             _update_flat_value(params, key, value)
         cond = self._build_obj(easy_params(params))
-        name, y_label_i, y_label_j = _get_label_indices(self.y_data.keys())
+        y_fits, y_values = [], []
+        for i, (x_data, y_data) in enumerate(
+                zip(self.x_data_sets, self.y_data_sets)):
+            y_fit = self._calculate_dataset(
+                cond, x_data, y_data, self.x_shift[i],
+                self.x_normalize[i], self.y_shift[i], self.y_normalize[i])
+            y_fit = self.postprocess(x_data, y_fit)
+            y_fits.append(np.concatenate(list(y_fit.values())))
+            y_values.append(np.concatenate(list(y_data.values())))
+        return self.loss(np.concatenate(y_fits), np.concatenate(y_values))
 
-        y_fit = {label: np.zeros_like(y) for label, y in self.y_data.items()}
-        for i in range(len(next(iter(self.x_data.values())))):
-            x = {label: x[i] for label, x in self.init_params.items()}
-            y = _calc_y(cond, x, self.y_data, name, y_label_i, y_label_j)
+    def _calculate_dataset(self, cond, x_data, y_data, x_shift,
+                           x_normalize, y_shift, y_normalize):
+        name, y_label_i, y_label_j = _get_label_indices(y_data.keys())
+        y_fit = {label: np.zeros_like(y) for label, y in y_data.items()}
+        n_points = len(next(iter(x_data.values())))
+        for i in range(n_points):
+            x = {label: x[i] for label, x in x_data.items()}
+            y = _calc_y(cond, x, y_data, name, y_label_i, y_label_j)
             for label in y_fit:
                 y_fit[label][i] = y[label]
 
-        if self.x_shift is not None:
-            y0 = _calc_y(cond, self.x_shift, self.y_data,
-                         name, y_label_i, y_label_j)
+        if x_shift is not None:
+            y0 = _calc_y(cond, x_shift, y_data, name, y_label_i, y_label_j)
             for label in y0:
                 y_fit[label] -= y0[label]
-            if self.y_shift is not None:
-                for label in self.y_shift:
-                    y_fit[label] += self.y_shift[label]
-        if self.x_normalize is not None:
-            y0 = _calc_y(cond, self.x_normalize, self.y_data,
+            if y_shift is not None:
+                for label in y_fit:
+                    y_fit[label] += y_shift[label]
+        if x_normalize is not None:
+            y0 = _calc_y(cond, x_normalize, y_data,
                          name, y_label_i, y_label_j)
             for label in y0:
                 y_fit[label] /= y0[label]
-            if self.y_normalize is not None:
-                for label in self.y_normalize:
-                    y_fit[label] *= self.y_normalize[label]
-
-        y_fit = self.postprocess(self.x_data, y_fit)
-        y_fit = np.concatenate(list(y_fit.values()))
-        y_data = np.concatenate(list(y_data.values()))
-        return self.loss(y_fit, y_data)
+            if y_normalize is not None:
+                for label in y_fit:
+                    y_fit[label] *= y_normalize[label]
+        return y_fit
     
     def _calculate_multi(self, param_values):
         n_data_sets = len(next(iter(self.x_data.values())))
@@ -280,23 +315,23 @@ class FittingRoutine:
                 y = _calc_y(cond, x, self.y_data, name, y_label_i, y_label_j)
                 for label in y_fit:
                     y_fit[label][j] = y[label]
-            if self.x_shift is not None:
-                x = {label: self.x_shift[label][i] for label in self.x_shift}
+            if self.x_shift[0] is not None:
+                x = {label: value[i] for label, value in self.x_shift[0].items()}
                 y0 = _calc_y(cond, x, self.y_data, name, y_label_i, y_label_j)
                 for label in y_fit:
                     y_fit[label] -= y0[label]
-                if self.y_shift is not None:
+                if self.y_shift[0] is not None:
                     for label in y_fit:
-                        y_fit[label] += self.y_shift[label][i]
-            if self.x_normalize is not None:
-                x = {label: self.x_normalize[label][i]
-                     for label in self.x_normalize}
+                        y_fit[label] += self.y_shift[0][label][i]
+            if self.x_normalize[0] is not None:
+                x = {label: value[i]
+                     for label, value in self.x_normalize[0].items()}
                 y0 = _calc_y(cond, x, self.y_data, name, y_label_i, y_label_j)
                 for label in y_fit:
                     y_fit[label] /= y0[label]
-                if self.y_normalize is not None:
+                if self.y_normalize[0] is not None:
                     for label in y_fit:
-                        y_fit[label] *= self.y_normalize[label][i]
+                        y_fit[label] *= self.y_normalize[0][label][i]
             x_data_set = {label: x[i] for label, x in self.x_data.items()}
             y_data_set = {label: y[i] for label, y in self.y_data.items()}
             y_fit = self.postprocess(x_data_set, y_fit)
@@ -330,6 +365,10 @@ class FullScatteringFitter:
         The independent variable data (e.g. field). The name of the
         variable is mapped to the data, e.g.
         ``{'field': [0, 1, 2]}``.
+        Alternatively, a sequence of mappings can be provided to combine
+        multiple datasets with shared parameters. The corresponding
+        ``x_data`` and ``y_data`` mappings are paired by position, and
+        each dataset may contain a different number of points.
     y_data
         The dependent variable data (e.g. conductivity). The name of
         the variable is mapped to the data, e.g.
@@ -337,26 +376,34 @@ class FullScatteringFitter:
         must start with "sigma" or "rho" (for conductivity or
         resistivity, respectively), and you can add a suffix to specify
         the component (e.g. ``'sigma_xx'``, ``'rho_xy'``).
+        Alternatively, a sequence of mappings can be provided to combine
+        multiple datasets with shared parameters. The residual and
+        Jacobian are constructed from all datasets.
     x_shift
         If provided, the y values will be shifted by the y value at
         this x point. The mapping must have the same structure as
         ``x_data``, but with single values instead of arrays as
-        the values.
+        the values. For multiple datasets, provide one mapping or ``None``
+        per dataset; ``None`` disables this operation for that dataset.
     x_normalize
         If provided, the y values will be normalized by the y value
         at this x point. The mapping must have the same structure
         as ``x_data``, but with single values instead of arrays as
-        the values. Note that shifts are applied before normalization.
+        the values. For multiple datasets, provide one such mapping per
+        dataset; ``None`` disables this operation for that dataset. Note
+        that shifts are applied before normalization.
     y_shift
         The y values will be shifted to this value (if ``x_shift`` is
         provided). The mapping must have the same structure as
         ``y_data``, but with single values instead of arrays as the
-        values.
+        values. For multiple datasets, provide one mapping or ``None`` per
+        dataset; ``None`` disables this operation for that dataset.
     y_normalize
         The y values will be shifted to this value (if ``x_shift`` is
         provided). The mapping must have the same structure as
         ``y_data``, but with single values instead of arrays as the
-        values.
+        values. For multiple datasets, provide one mapping or ``None`` per
+        dataset; ``None`` disables this operation for that dataset.
     regularization
         The regularization strength for the fitting routine.
     save_path
@@ -380,26 +427,31 @@ class FullScatteringFitter:
     """
     def __init__(
             self, init_params: Mapping,
-            x_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
-            y_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
-            x_shift: Mapping[str, Real | Sequence[Real]] = None,
-            x_normalize: Mapping[str, Real | Sequence[Real]] = None,
-            y_shift: Mapping[str, Real | Sequence[Real]] = None,
-            y_normalize: Mapping[str, Real | Sequence[Real]] = None,
+            x_data: Mapping | Sequence[Mapping],
+            y_data: Mapping | Sequence[Mapping],
+            x_shift: Mapping | Sequence[Mapping] = None,
+            x_normalize: Mapping | Sequence[Mapping] = None,
+            y_shift: Mapping | Sequence[Mapping] = None,
+            y_normalize: Mapping | Sequence[Mapping] = None,
             regularization: float = 0.0, save_path: str = None,
             save_label: str = "fit", print_log: bool = True):
         self.params = easy_params(init_params)
         self.band = BandStructure(**self.params)
         self.band.discretize()
 
-        self.y_name, self.y_label_i, self.y_label_j = _get_label_indices(
-            y_data.keys())
-        self.x_data = x_data
-        self.y_data = y_data
-        self.x_shift = x_shift
-        self.x_normalize = x_normalize
-        self.y_shift = y_shift
-        self.y_normalize = y_normalize
+        self.x_data_sets = _normalize_data_sets(x_data, "x_data")
+        self.y_data_sets = _normalize_data_sets(y_data, "y_data")
+        _validate_data_sets(self.x_data_sets, self.y_data_sets)
+        self.x_data = self.x_data_sets[0]
+        self.y_data = self.y_data_sets[0]
+        self.x_shift = _normalize_optional_data_sets(
+            x_shift, len(self.x_data_sets), "x_shift")
+        self.x_normalize = _normalize_optional_data_sets(
+            x_normalize, len(self.x_data_sets), "x_normalize")
+        self.y_shift = _normalize_optional_data_sets(
+            y_shift, len(self.x_data_sets), "y_shift")
+        self.y_normalize = _normalize_optional_data_sets(
+            y_normalize, len(self.x_data_sets), "y_normalize")
 
         self.save_path = save_path
         self.save_label = save_label
@@ -491,23 +543,34 @@ class FullScatteringFitter:
             scat_full = self.band.symmetry_projector.T @ scattering_rates
         cond = Conductivity(
             self.band, scattering_rate=scat_full, **self.params)
-        self._calc_y_multiplier(cond)
-        self._calc_fit(scat_full, len(scattering_rates))
-        self._apply_y_shifts(cond)
+        self.y_fit = []
+        self.jacobian_matrix = []
+        for i in range(len(self.x_data_sets)):
+            self._calc_y_multiplier(cond, i)
+            self._calc_fit(scat_full, len(scattering_rates), i)
+            self._apply_y_shifts(cond, i)
         if self.regularization > 0.0:
             self.reg_residual = \
                 self.regularization/1000 * self.grad_op @ scattering_rates
 
-        y_fit = np.concatenate(list(self.y_fit.values()))
-        y_data = np.concatenate(list(self.y_data.values()))
+        y_fit = np.concatenate([
+            np.concatenate(list(dataset.values())) for dataset in self.y_fit])
+        y_data = np.concatenate([
+            np.concatenate(list(dataset.values()))
+            for dataset in self.y_data_sets])
         self.residual_vector = y_fit - y_data
-        self.jacobian_matrix = np.vstack(list(self.jacobian_matrix.values()))
+        self.jacobian_matrix = np.vstack([
+            np.vstack(list(dataset.values()))
+            for dataset in self.jacobian_matrix])
         self._scat_cache = np.copy(scattering_rates)
 
-    def _calc_y_multiplier(self, cond):
-        if self.x_normalize is not None:
-            self.y0 = _calc_y(cond, self.x_normalize, self.y_data,
-                              self.y_name, self.y_label_i, self.y_label_j)
+    def _calc_y_multiplier(self, cond, dataset_index):
+        y_data = self.y_data_sets[dataset_index]
+        if self.x_normalize[dataset_index] is not None:
+            y_name, y_label_i, y_label_j = _get_label_indices(y_data.keys())
+            x_normalize = self.x_normalize[dataset_index]
+            self.y0 = _calc_y(cond, x_normalize, y_data,
+                              y_name, y_label_i, y_label_j)
             transpose_solution = cond._factorization.solve(
                 cond._finite_elements[0.0].vhat_projections, trans='T')
             self.j0 = self._calc_jac(
@@ -517,45 +580,58 @@ class FullScatteringFitter:
             self._y_multiply = {label: 1.0 / self.y0[label]
                                 for label in self.y0}
         else:
-            self._y_multiply = {label: 1.0 for label in self.y_data}
-        if self.y_normalize is not None:
+            self._y_multiply = {label: 1.0 for label in y_data}
+        if self.y_normalize[dataset_index] is not None:
             for label in self._y_multiply:
-                self._y_multiply[label] *= self.y_normalize[label]
+                self._y_multiply[label] *= \
+                    self.y_normalize[dataset_index][label]
 
-    def _apply_y_shifts(self, cond):
-        if self.x_shift is not None:
-            y0 = _calc_y(cond, self.x_shift, self.y_data,
-                            self.y_name, self.y_label_i, self.y_label_j)
-            for label in self.y_fit:
-                self.y_fit[label] -= y0[label]
-        if self.y_shift is not None:
-            for label in self.y_fit:
-                self.y_fit[label] += self.y_shift[label]
+    def _apply_y_shifts(self, cond, dataset_index):
+        y_data = self.y_data_sets[dataset_index]
+        y_name, y_label_i, y_label_j = _get_label_indices(y_data.keys())
+        if self.x_shift[dataset_index] is not None:
+            y0 = _calc_y(cond, self.x_shift[dataset_index], y_data,
+                            y_name, y_label_i, y_label_j)
+            for label in self.y_fit[dataset_index]:
+                self.y_fit[dataset_index][label] -= y0[label]
+        if self.y_shift[dataset_index] is not None:
+            for label in self.y_fit[dataset_index]:
+                self.y_fit[dataset_index][label] += \
+                    self.y_shift[dataset_index][label]
 
-    def _calc_fit(self, scattering_rates, n_irr_scat=None):
-        n_data = len(next(iter(self.x_data.values())))
+    def _calc_fit(self, scattering_rates, n_irr_scat=None,
+                  dataset_index=0):
+        x_data = self.x_data_sets[dataset_index]
+        y_data = self.y_data_sets[dataset_index]
+        y_name, y_label_i, y_label_j = _get_label_indices(y_data.keys())
+        n_data = len(next(iter(x_data.values())))
         if n_irr_scat is None:
             n_irr_scat = len(scattering_rates)
-        self.y_fit = {label: np.empty_like(y)
-                      for label, y in self.y_data.items()}
-        self.jacobian_matrix = {
+        y_fit = {label: np.empty_like(y) for label, y in y_data.items()}
+        jacobian_matrix = {
             label: np.empty((len(y), n_irr_scat))
-            for label, y in self.y_data.items()}
-        results = [self._calc_single_data_point(scattering_rates, i)
+            for label, y in y_data.items()}
+        results = [self._calc_single_data_point(scattering_rates, i,
+                                                dataset_index)
                    for i in range(n_data)]
         for i, r in enumerate(results):
             rho, jac = r
-            for label in self.y_data:
-                a, b = self.y_label_i[label], self.y_label_j[label]
-                self.y_fit[label][i] = self._y_multiply[label] * rho[a, b]
-                self.jacobian_matrix[label][i] = \
-                    self._y_multiply[label] * THz * (
-                        jac[a, b] - rho[a, b]/self.y0[label]*self.j0[a, b])
+            for label in y_data:
+                a, b = y_label_i[label], y_label_j[label]
+                y_fit[label][i] = self._y_multiply[label] * rho[a, b]
+                jacobian_matrix[label][i] = self._y_multiply[label] * THz * jac[a, b]
+                if self.x_normalize[dataset_index] is not None:
+                    jacobian_matrix[label][i] -= \
+                        self._y_multiply[label] * THz * \
+                        rho[a, b]/self.y0[label] * self.j0[a, b]
+        self.y_fit.append(y_fit)
+        self.jacobian_matrix.append(jacobian_matrix)
 
-    def _calc_single_data_point(self, scattering_rates, index):
+    def _calc_single_data_point(self, scattering_rates, index, dataset_index=0):
         cond = Conductivity(self.band, scattering_rate=scattering_rates,
                             **self.params)
-        x = {label: x[index] for label, x in self.x_data.items()}
+        x_data = self.x_data_sets[dataset_index]
+        x = {label: x[index] for label, x in x_data.items()}
         for label, value in x.items():
             setattr(cond, label, value)
         cond.calculate()
@@ -656,15 +732,15 @@ def _dummy_processor(x, y):
     return y
 
 
-def fit_model(x_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
-              y_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
+def fit_model(x_data: Mapping | Sequence[Mapping],
+              y_data: Mapping | Sequence[Mapping],
               init_params: Mapping, bounds: Mapping,
               multi_params: Collection[str] = None,
               multi_params_labels: Collection[str] = None,
-              x_shift: Mapping[str, Real | Sequence[Real]] = None,
-              x_normalize: Mapping[str, Real | Sequence[Real]] = None,
-              y_shift: Mapping[str, Real | Sequence[Real]] = None,
-              y_normalize: Mapping[str, Real | Sequence[Real]] = None,
+              x_shift: Mapping | Sequence[Mapping] = None,
+              x_normalize: Mapping | Sequence[Mapping] = None,
+              y_shift: Mapping | Sequence[Mapping] = None,
+              y_normalize: Mapping | Sequence[Mapping] = None,
               optimizer: Callable = scipy.optimize.differential_evolution,
               loss: Callable = _mean_absolute_error,
               postprocess: Callable = _dummy_processor,
@@ -686,6 +762,10 @@ def fit_model(x_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
         the value must be a collection of sequences, where each sequence
         corresponds to a different parameter to be fitted,
         e.g. ``{'field': [[[0.5, 1.5, 2.5], [0.6, 1.6, 2.6]]}``.
+        Alternatively, a sequence of mappings can be provided to combine
+        multiple datasets with shared parameters. The corresponding
+        ``x_data`` and ``y_data`` mappings are paired by position, and
+        each dataset may contain a different number of points.
     y_data
         The dependent variable data (e.g. conductivity). The name of
         the variable is mapped to the data, e.g.
@@ -697,6 +777,9 @@ def fit_model(x_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
         sequences, where each sequence corresponds to a different
         parameter to be fitted, e.g. ``{'rho_zz': [[1.1, 2.4, 3.8],
         [1.2, 2.5, 3.9]]}``.
+        Alternatively, a sequence of mappings can be provided to combine
+        multiple datasets with shared parameters. The loss is calculated
+        using the concatenated processed values from all datasets.
     init_params
         Initial parameters for the fitting routine, and also other
         parameters for initiallizing the classes. This is passed through
@@ -729,7 +812,8 @@ def fit_model(x_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
         If provided, the y values will be shifted by the y value at
         this x point. The mapping must have the same structure as
         ``x_data``, but with single values instead of arrays as
-        the values.
+        the values. For multiple datasets, provide one such mapping per
+        dataset.
     x_normalize
         If provided, the y values will be normalized by the y value
         at this x point. The mapping must have the same structure
@@ -744,7 +828,8 @@ def fit_model(x_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
         The y values will be normalized to this value (if
         ``x_normalize`` is provided). The mapping must have the same
         structure as ``y_data``, but with single values instead of
-        arrays as the values.
+        arrays as the values. For multiple datasets, provide one such
+        mapping per dataset.
     optimizer
         The optimizer function to use for fitting. It must have the
         same interface as the SciPy optimizers.
@@ -772,9 +857,18 @@ def fit_model(x_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
     **kwargs
         Additional keyword arguments passed to the `optimizer`
     """
+    x_data_sets = _normalize_data_sets(x_data, "x_data")
+    y_data_sets = _normalize_data_sets(y_data, "y_data")
+    _validate_data_sets(x_data_sets, y_data_sets)
+    if multi_params and len(x_data_sets) > 1:
+        raise ValueError(
+            "Combining dataset mappings with multi_params is not supported; "
+            "use the existing nested mapping format.")
     if save_label is None:
-        x_string = x_label if isinstance(x_label, str) else "_".join(x_label)
-        y_string = y_label if isinstance(y_label, str) else "_".join(y_label)
+        x_labels = list(x_data_sets[0])
+        y_labels = list(y_data_sets[0])
+        x_string = x_labels[0] if len(x_labels) == 1 else "_".join(x_labels)
+        y_string = y_labels[0] if len(y_labels) == 1 else "_".join(y_labels)
         save_label = f"{y_string}_{x_string}"
 
     update_keys = _extract_flat_keys(bounds, bounds=True)
@@ -783,7 +877,7 @@ def fit_model(x_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
     if multi_params:
         update_keys, bounds, x0, init_params = _multiply_multi_params(
             update_keys, bounds, x0, init_params,
-            multi_params, len(next(iter(x_data.values()))))
+            multi_params, len(next(iter(x_data_sets[0].values()))))
     for i in range(len(update_keys)):
         if x0[i] is None:
             x_min, x_max = bounds[i]
@@ -809,13 +903,15 @@ def fit_model(x_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
 
 
 def fit_full_scattering(
-        x_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
-        y_data: Mapping[str, Sequence[Real | Sequence[Sequence[Real]]]],
+        x_data: Mapping | Sequence[Mapping],
+        y_data: Mapping | Sequence[Mapping],
         init_params: Mapping, init_scattering: float = 1.0,
         bounds: Sequence[Sequence] | Sequence = (0, np.inf),
         regularization: Sequence[Real] | Real = 0.0,
-        x_shift: Mapping = None, x_normalize: Mapping = None,
-        y_shift: Mapping = None, y_normalize: Mapping = None,
+        x_shift: Mapping | Sequence[Mapping] = None,
+        x_normalize: Mapping | Sequence[Mapping] = None,
+        y_shift: Mapping | Sequence[Mapping] = None,
+        y_normalize: Mapping | Sequence[Mapping] = None,
         save_path: str = None, save_label: str = None,
         print_log: bool = True, **kwargs):
     """Convenience function to set up and run a fitting routine.
@@ -831,6 +927,10 @@ def fit_full_scattering(
         The independent variable data (e.g. field). The name of the
         variable is mapped to the data, e.g.
         ``{'field': [0, 1, 2]}``.
+        Alternatively, a sequence of mappings can be provided to combine
+        multiple datasets with shared parameters. The corresponding
+        ``x_data`` and ``y_data`` mappings are paired by position, and
+        each dataset may contain a different number of points.
     y_data
         The dependent variable data (e.g. conductivity). The name of
         the variable is mapped to the data, e.g.
@@ -838,6 +938,9 @@ def fit_full_scattering(
         must start with "sigma" or "rho" (for conductivity or
         resistivity, respectively), and you can add a suffix to specify
         the component (e.g. ``'sigma_xx'``, ``'rho_xy'``).
+        Alternatively, a sequence of mappings can be provided to combine
+        multiple datasets with shared parameters. The residual and
+        Jacobian are constructed from all datasets.
     init_params
         Parameters for initiallizing the classes. This is passed through
         ``easy_params`` to the ``BandStructure`` and ``Conductivity``.
@@ -905,9 +1008,12 @@ def fit_full_scattering(
     **kwargs
         Additional keyword arguments passed to the `optimizer`
     """
+    x_data_sets = _normalize_data_sets(x_data, "x_data")
+    y_data_sets = _normalize_data_sets(y_data, "y_data")
+    _validate_data_sets(x_data_sets, y_data_sets)
     if save_label is None:
-        x_labels = list(x_data)
-        y_labels = list(y_data)
+        x_labels = list(x_data_sets[0])
+        y_labels = list(y_data_sets[0])
         x_string = x_labels[0] if len(x_labels) == 1 else "_".join(x_labels)
         y_string = y_labels[0] if len(y_labels) == 1 else "_".join(y_labels)
         save_label = f"{y_string}_{x_string}"
@@ -985,6 +1091,52 @@ def _get_label_indices(labels: Collection[str]):
         i[label] = {'x': 0, 'y': 1, 'z': 2}[index_labels[0]]
         j[label] = {'x': 0, 'y': 1, 'z': 2}[index_labels[1]]
     return name, i, j
+
+
+def _normalize_data_sets(data, name):
+    if isinstance(data, Mapping):
+        return (data,)
+    if (isinstance(data, Sequence) and not isinstance(data, (str, bytes))
+            and all(isinstance(item, Mapping) for item in data)):
+        if not data:
+            raise ValueError(f"{name} must contain at least one dataset.")
+        return tuple(data)
+    raise TypeError(f"{name} must be a mapping or a sequence of mappings.")
+
+
+def _normalize_optional_data_sets(data, n_data_sets, name):
+    if data is None:
+        return [None] * n_data_sets
+    if isinstance(data, Mapping):
+        data_sets = (data,)
+    elif (isinstance(data, Sequence)
+          and not isinstance(data, (str, bytes))):
+        if not data:
+            raise ValueError(f"{name} must contain at least one dataset.")
+        if any(item is not None and not isinstance(item, Mapping)
+               for item in data):
+            raise TypeError(
+                f"{name} must be a mapping, None, or a sequence of "
+                "mappings and None values.")
+        data_sets = tuple(data)
+    else:
+        raise TypeError(
+            f"{name} must be a mapping, None, or a sequence of mappings "
+            "and None values.")
+    if len(data_sets) == 1 and n_data_sets > 1:
+        raise ValueError(
+            f"{name} must contain one mapping or None for each dataset.")
+    if len(data_sets) != n_data_sets:
+        raise ValueError(
+            f"{name} must contain {n_data_sets} dataset mappings or None "
+            "values.")
+    return list(data_sets)
+
+
+def _validate_data_sets(x_data_sets, y_data_sets):
+    if len(x_data_sets) != len(y_data_sets):
+        raise ValueError("x_data and y_data must contain the same number "
+                         "of datasets.")
 
 
 def _calc_y(cond, x_data, y_data, name, y_label_i, y_label_j):

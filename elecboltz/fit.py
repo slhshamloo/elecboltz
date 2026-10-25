@@ -881,8 +881,11 @@ def fit_full_scattering(
         x_scale='jac', callback=fitter.log, **kwargs)
     if isinstance(regularization, Sequence):
         for reg in regularization[1:]:
-            print(result.message)
-            print("\n")
+            print(result.message + "\n\n")
+            if save_path is not None:
+                path = Path(save_path) / f"{save_label}.log"
+                with open(path, 'a') as log_file:
+                    log_file.write(result.message + "\n\n")
             fitter.reweigh_regularization(result.x)
             fitter.regularization = reg
             result = scipy.optimize.least_squares(

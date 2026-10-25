@@ -26,107 +26,6 @@ class FittingRoutine:
     Stores the necessary data and generates the functions used in
     This includes handling the residual computation, parameter update,
     logging the fitting progress, and saving the results to a file.
-
-    Parameters
-    ----------
-    init_params
-        Initial parameters for the fitting routine, and also other
-        parameters for initiallizing the classes. This is passed through
-        ``easy_params`` to the ``BandStructure`` and ``Conductivity``.
-    param_keys
-        The "flat keys of the parameters to update.
-    x_data
-        The independent variable data (e.g. field). The name of the
-        variable is mapped to the data, e.g.
-        ``{'field': [0.5, 1.5, 2.5]}``. In case of a nonempty
-        ``multi_params``, the value must be a collection of
-        sequences, where each sequence corresponds to a different
-        parameter to be fitted,
-        e.g. ``{'field': [[0.5, 1.5, 2.5], [0.6, 1.6, 2.6]]}``.
-        Alternatively, a sequence of mappings can be provided to combine
-        multiple datasets with shared parameters. The corresponding
-        ``x_data`` and ``y_data`` mappings are paired by position, and
-        each dataset may contain a different number of points.
-    y_data
-        The dependent variable data (e.g. conductivity). The name of
-        the variable is mapped to the data, e.g.
-        ``{'sigma_xx': [1.1, 2.4, 3.8]}``. The name of each variable
-        must start with "sigma" or "rho" (for conductivity or
-        resistivity, respectively), and you can add a suffix to
-        specify the component (e.g. ``"sigma_xx"``, ``"rho_xy"``).
-        In case of nonempty ``multi_params``, the value must be a
-        collection of sequences, where each sequence corresponds to
-        a different parameter to be fitted, e.g.
-        ``{'rho_zz': [[1.1, 2.4, 3.8], [1.2, 2.5, 3.9]]}``.
-        Alternatively, a sequence of mappings can be provided to combine
-        multiple datasets with shared parameters. The loss is calculated
-        using the concatenated processed values from all datasets.
-    x_shift
-        If provided, the y values will be shifted by the y value at
-        this x point. For multiple datasets, provide one mapping or
-        ``None`` per dataset; ``None`` disables this operation for that
-        dataset.
-    x_normalize
-        If provided, the y values will be normalized by the y value
-        at this x point.  Note that shifts are applied before
-        normalization. For multiple datasets, provide one mapping or
-        ``None`` per dataset; ``None`` disables this operation for that
-        dataset.
-    y_shift
-        The y values will be shifted to this value
-        (if ``x_shift`` is provided). For multiple datasets, provide one
-        mapping or ``None`` per dataset; ``None`` disables this operation
-        for that dataset.
-    y_normalize
-        The y values will be normalized to this value
-        (if ``x_normalize`` is provided). For multiple datasets, provide
-        one mapping or ``None`` per dataset; ``None`` disables this
-        operation for that dataset.
-    loss
-        A function that takes the fit and data y values, and
-        returns a scalar loss value. By default, the mean absolute
-        error is used.
-    postprocess
-        This callable is applied to the data y values before
-        calculating the loss. It takes ``x_data`` and a ``y`` with a
-        format similar to ``y_data``, and returns the processed ``y``,
-        again with a format similar to ``y_data``. By default, no
-        postprocessing is applied. An example use case is applying a
-        mask to ignore parts of the values where the data can be
-        unreliable. This is to apply the same preprocessing that might
-        be applied to the data before fitting.
-    save_path
-        The directory where the fitting logs will be saved. If not
-        provided, logs will not be saved.
-    save_label
-        Label of the results (used as file names).
-    update_keys
-        The "flattened" keys of the parameters that will be updated
-        during the fitting. See ``extract_keys`` for more information.
-        Used for updating the ``params`` attribute and logging. If not
-        provided, ``params`` will not be updated and the parameter names
-        will not be mentioned in the log.
-    multi_params
-        A collection of parameters that are to be fitted differently for
-        the different datasets in ``x_data`` and ``y_data``, if there is
-        more than one. To make it precise, each label must be a
-        dot-separated string, showing the "path" to the value in the
-        parameters dictionary, e.g. ``"band_params.mu"`` or
-        ``"scattering_params.nu.0"``.
-    multi_params_labels
-        A collection of labels for the different datasets in ``x_data``
-        and ``y_data``. The output of fits that contain multi-parameters
-        will be saved in separate files for each dataset, and the labels
-        will be appended to the ``save_label`` with an underscore. If
-        not provided, the datasets will be labeled with their index
-        in the collection, e.g. ``"fit_label_0.json"``. These parameters must
-        themselves be collections in the parameters dictionary,
-        showing the value for every dataset e.g. ``{'band_params':
-        {'mu': [0.1, 0.2, 0.3]}}`` in ``init_params`` or
-        ``{'band_params': {'mu': [(0.1, 0.9), (0.2, 0.8),
-        (0.3, 0.7)]}}`` in ``bounds``.
-    print_log
-        If True, the fitting progress will be printed to the console.
     
     Attributes
     ----------
@@ -351,68 +250,8 @@ class FullScatteringFitter:
     """This convenience class sets up a routine for full scattering
     rate fitting.
 
-    Stores the necessary data and generates the functions used in
-    This includes handling the residual computation, parameter update,
-    logging the fitting progress, and saving the results to a file.
-
-    Parameters
-    ----------
-    init_params
-        Initial parameters for the fitting routine, and also other
-        parameters for initiallizing the classes. This is passed through
-        ``easy_params`` to the ``BandStructure`` and ``Conductivity``.
-    x_data
-        The independent variable data (e.g. field). The name of the
-        variable is mapped to the data, e.g.
-        ``{'field': [0, 1, 2]}``.
-        Alternatively, a sequence of mappings can be provided to combine
-        multiple datasets with shared parameters. The corresponding
-        ``x_data`` and ``y_data`` mappings are paired by position, and
-        each dataset may contain a different number of points.
-    y_data
-        The dependent variable data (e.g. conductivity). The name of
-        the variable is mapped to the data, e.g.
-        ``{'sigma_xx': [1.1, 2.4, 3.8]}``. The name of each variable
-        must start with "sigma" or "rho" (for conductivity or
-        resistivity, respectively), and you can add a suffix to specify
-        the component (e.g. ``'sigma_xx'``, ``'rho_xy'``).
-        Alternatively, a sequence of mappings can be provided to combine
-        multiple datasets with shared parameters. The residual and
-        Jacobian are constructed from all datasets.
-    x_shift
-        If provided, the y values will be shifted by the y value at
-        this x point. The mapping must have the same structure as
-        ``x_data``, but with single values instead of arrays as
-        the values. For multiple datasets, provide one mapping or ``None``
-        per dataset; ``None`` disables this operation for that dataset.
-    x_normalize
-        If provided, the y values will be normalized by the y value
-        at this x point. The mapping must have the same structure
-        as ``x_data``, but with single values instead of arrays as
-        the values. For multiple datasets, provide one such mapping per
-        dataset; ``None`` disables this operation for that dataset. Note
-        that shifts are applied before normalization.
-    y_shift
-        The y values will be shifted to this value (if ``x_shift`` is
-        provided). The mapping must have the same structure as
-        ``y_data``, but with single values instead of arrays as the
-        values. For multiple datasets, provide one mapping or ``None`` per
-        dataset; ``None`` disables this operation for that dataset.
-    y_normalize
-        The y values will be shifted to this value (if ``x_shift`` is
-        provided). The mapping must have the same structure as
-        ``y_data``, but with single values instead of arrays as the
-        values. For multiple datasets, provide one mapping or ``None`` per
-        dataset; ``None`` disables this operation for that dataset.
-    regularization
-        The regularization strength for the fitting routine.
-    save_path
-        The directory where the fitting logs will be saved. If not
-        provided, logs will not be saved.
-    save_label
-        Label of the results (used as file names).
-    print_log
-        If True, the fitting progress will be printed to the console.
+    Handles caching the residual and jacobian calculations to avoid
+    redundant calculations.
     
     Attributes
     ----------
@@ -433,8 +272,9 @@ class FullScatteringFitter:
             x_normalize: Mapping | Sequence[Mapping] = None,
             y_shift: Mapping | Sequence[Mapping] = None,
             y_normalize: Mapping | Sequence[Mapping] = None,
-            regularization: float = 0.0, save_path: str = None,
-            save_label: str = "fit", print_log: bool = True):
+            regularization: Real = 0.0, peak_percentile: Real = 80,
+            save_path: str = None, save_label: str = "fit",
+            print_log: bool = True):
         self.params = easy_params(init_params)
         self.band = BandStructure(**self.params)
         self.band.discretize()
@@ -465,6 +305,7 @@ class FullScatteringFitter:
         self.jacobian_matrix = None
 
         self.regularization = regularization
+        self.peak_percentile = peak_percentile
         if regularization > 0.0:
             self.grad_op = _calc_gradient_operator(self.band.surfaces[0.0])
 
@@ -498,7 +339,7 @@ class FullScatteringFitter:
         """
         grad_applied = self.grad_op @ scattering_rates
         grad_norm = np.linalg.norm(grad_applied.reshape(-1, 3), axis=1)
-        sharpness = np.percentile(grad_norm, 80)
+        sharpness = np.percentile(grad_norm, self.peak_percentile)
         weight_triangle = 1.0 / np.sqrt(1.0 + (grad_norm/sharpness)**2)
         weight_rows = np.repeat(weight_triangle, 3)
         self.grad_op = scipy.sparse.diags(weight_rows) @ self.grad_op
@@ -905,9 +746,10 @@ def fit_model(x_data: Mapping | Sequence[Mapping],
 def fit_full_scattering(
         x_data: Mapping | Sequence[Mapping],
         y_data: Mapping | Sequence[Mapping],
-        init_params: Mapping, init_scattering: float = 1.0,
+        init_params: Mapping, init_scattering: Real = 10.0,
         bounds: Sequence[Sequence] | Sequence = (0, np.inf),
         regularization: Sequence[Real] | Real = 0.0,
+        peak_percentile: Real = 80,
         x_shift: Mapping | Sequence[Mapping] = None,
         x_normalize: Mapping | Sequence[Mapping] = None,
         y_shift: Mapping | Sequence[Mapping] = None,
@@ -990,9 +832,14 @@ def fit_full_scattering(
         the results of the previous fit used as the initial guess for
         the next fit. Each step, the regularization is weighted to
         preserve the sharp features of the last step, while
-        smoothing out the noise. Therefor, repeating a step
+        smoothing out the noise. Therefore, repeating a step
         will actually change the result, and it is recommended
         to repeat the last step.
+    peak_percentile
+        The percentile of the gradient norm that is assumed to be due
+        to the "peaks" in the scattering rate. Used to reweigh the
+        regularization term to preserve sharp features in the scattering
+        rates while still smoothing out noise.
     loss
         A function that takes the fit and data y values, and returns a
         scalar loss value. By default, the mean absolute error is used.
@@ -1022,8 +869,8 @@ def fit_full_scattering(
            else regularization)
     fitter = FullScatteringFitter(
         init_params, x_data, y_data, x_shift, x_normalize,
-        y_shift, y_normalize, reg, save_path, save_label,
-        print_log=print_log)
+        y_shift, y_normalize, reg, peak_percentile,
+        save_path, save_label, print_log)
     x0 = _get_init_scatrate_fullfit(fitter.band, init_scattering)
     for tol in ['ftol', 'xtol', 'gtol']:
         if tol not in kwargs:

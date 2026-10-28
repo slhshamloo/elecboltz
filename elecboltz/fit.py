@@ -1240,11 +1240,13 @@ def _save_full_scattering_result(
     if fitter.band.symmetry is not None:
         result['scattering_rate_irreducible'] = result.x
         result['scattering_rate'] = fitter.band.symmetry_projector.T @ result.x
+        result['jacobian'] = (fitter.band.symmetry_projector.T
+                              @ fitter.jacobian_matrix)
     else:
         result['scattering_rate'] = result.x
+        result['jacobian'] = fitter.jacobian_matrix
     result.pop('x', None)
 
-    result['jacobian'] = result.pop('jac', None)
     result['iterations'] = result.pop('nit', None)
     result['evaluations'] = result.pop('nfev', None)
     result['jacobian_evaluations'] = result.pop('njev', None)
@@ -1253,6 +1255,7 @@ def _save_full_scattering_result(
 
     result.pop('fun', None)
     result.pop('grad', None)
+    result.pop('jac', None)
     result.pop('active_mask', None)
 
     result['begin_time'] = begin_time.isoformat()

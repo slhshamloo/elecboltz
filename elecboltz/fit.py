@@ -865,6 +865,7 @@ def fit_full_scattering(
         y_string = y_labels[0] if len(y_labels) == 1 else "_".join(y_labels)
         save_label = f"{y_string}_{x_string}"
     begin_time = datetime.now()
+
     reg = (regularization[0] if isinstance(regularization, Sequence)
            else regularization)
     fitter = FullScatteringFitter(
@@ -895,14 +896,8 @@ def fit_full_scattering(
     end_time = datetime.now()
     print(result.message)
     print("\n\n")
-    if fitter.band.symmetry is not None:
-        result['scattering_rate_irreducible'] = result.x
-        result['scattering_rate'] = fitter.band.symmetry_projector.T @ result.x
-    else:
-        result['scattering_rate'] = result.x
-    result.pop('x', None)
     _save_full_scattering_result(
-        result, init_params, init_scattering,
+        result, fitter, init_params, init_scattering,
         begin_time, end_time, save_path, save_label)
     return result
 
@@ -1240,8 +1235,16 @@ def _save_fit_result(result, init_params, update_keys, begin_time,
 
 
 def _save_full_scattering_result(
-        result, init_params, init_scattering,
+        result, fitter, init_params, init_scattering,
         begin_time, end_time, save_path, save_label):
+    if fitter.band.symmetry is not None:
+        result['scattering_rate_irreducible'] = result.x
+        result['scattering_rate'] = fitter.band.symmetry_projector.T @ result.x
+    else:
+        result['scattering_rate'] = result.x
+    result.pop('x', None)
+
+    result['jacobian'] = result.pop('jac', None)
     result['iterations'] = result.pop('nit', None)
     result['evaluations'] = result.pop('nfev', None)
     result['jacobian_evaluations'] = result.pop('njev', None)
@@ -1249,7 +1252,7 @@ def _save_full_scattering_result(
     result['init_scattering'] = init_scattering
 
     result.pop('fun', None)
-    result.pop('jac', None)
+    result.pop('grad', None)
     result.pop('active_mask', None)
 
     result['begin_time'] = begin_time.isoformat()

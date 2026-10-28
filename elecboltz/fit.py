@@ -1240,8 +1240,8 @@ def _save_full_scattering_result(
     if fitter.band.symmetry is not None:
         result['scattering_rate_irreducible'] = result.x
         result['scattering_rate'] = fitter.band.symmetry_projector.T @ result.x
-        result['jacobian'] = (fitter.band.symmetry_projector.T
-                              @ fitter.jacobian_matrix)
+        result['jacobian'] = (fitter.jacobian_matrix
+                              @ fitter.band.symmetry_projector)
     else:
         result['scattering_rate'] = result.x
         result['jacobian'] = fitter.jacobian_matrix

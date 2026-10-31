@@ -293,6 +293,10 @@ class FullScatteringFitter:
         self.y_normalize = _normalize_optional_data_sets(
             y_normalize, len(self.x_data_sets), "y_normalize")
 
+        self.y0 = [None] * len(self.x_data_sets)
+        self.j0 = [None] * len(self.x_data_sets)
+        self._y_multiply = [None] * len(self.x_data_sets)
+
         self.save_path = save_path
         self.save_label = save_label
         self.print_log = print_log
@@ -410,31 +414,44 @@ class FullScatteringFitter:
         if self.x_normalize[dataset_index] is not None:
             y_name, y_label_i, y_label_j = _get_label_indices(y_data.keys())
             x_normalize = self.x_normalize[dataset_index]
-            self.y0 = _calc_y(cond, x_normalize, y_data,
-                              y_name, y_label_i, y_label_j)
+            self.y0[dataset_index] = _calc_y(
+                cond, x_normalize, y_data,
+                y_name, y_label_i, y_label_j)
             transpose_solution = cond._factorization.solve(
                 cond._finite_elements[0.0].vhat_projections, trans='T')
-            self.j0 = self._calc_jac(
+            self.j0[dataset_index] = self._calc_jac(
                 cond._finite_elements[0.0].jacobian_sums,
                 cond._linear_solution, transpose_solution, cond,
                 np.linalg.inv(cond.sigma))
-            self._y_multiply = {label: 1.0 / self.y0[label]
-                                for label in self.y0}
+            self._y_multiply[dataset_index] = {
+                label: 1.0 / self.y0[dataset_index][label]
+                for label in self.y0[dataset_index]}
         else:
-            self._y_multiply = {label: 1.0 for label in y_data}
+            self._y_multiply[dataset_index] = {label: 1.0 for label in y_data}
         if self.y_normalize[dataset_index] is not None:
-            for label in self._y_multiply:
-                self._y_multiply[label] *= \
+            for label in self._y_multiply[dataset_index]:
+                self._y_multiply[dataset_index][label] *= \
                     self.y_normalize[dataset_index][label]
 
     def _apply_y_shifts(self, cond, dataset_index):
         y_data = self.y_data_sets[dataset_index]
         y_name, y_label_i, y_label_j = _get_label_indices(y_data.keys())
         if self.x_shift[dataset_index] is not None:
-            y0 = _calc_y(cond, self.x_shift[dataset_index], y_data,
-                            y_name, y_label_i, y_label_j)
+            y_name, y_label_i, y_label_j = _get_label_indices(y_data.keys())
+            y_shift = _calc_y(cond, self.x_shift[dataset_index], y_data,
+                              y_name, y_label_i, y_label_j)
+            transpose_solution = cond._factorization.solve(
+                cond._finite_elements[0.0].vhat_projections, trans='T')
+            jac_shift = self._calc_jac(
+                cond._finite_elements[0.0].jacobian_sums,
+                cond._linear_solution, transpose_solution, cond,
+                np.linalg.inv(cond.sigma))
             for label in self.y_fit[dataset_index]:
-                self.y_fit[dataset_index][label] -= y0[label]
+                self.y_fit[dataset_index][label] -= \
+                    self._y_multiply[dataset_index][label] * y_shift[label]
+                self.jacobian_matrix[dataset_index][label] -= (
+                    self._y_multiply[dataset_index][label] * THz
+                    * jac_shift[y_label_i[label], y_label_j[label]])
         if self.y_shift[dataset_index] is not None:
             for label in self.y_fit[dataset_index]:
                 self.y_fit[dataset_index][label] += \
@@ -459,12 +476,15 @@ class FullScatteringFitter:
             rho, jac = r
             for label in y_data:
                 a, b = y_label_i[label], y_label_j[label]
-                y_fit[label][i] = self._y_multiply[label] * rho[a, b]
-                jacobian_matrix[label][i] = self._y_multiply[label] * THz * jac[a, b]
+                y_fit[label][i] = \
+                    self._y_multiply[dataset_index][label] * rho[a, b]
+                jacobian_matrix[label][i] = \
+                    self._y_multiply[dataset_index][label] * THz * jac[a, b]
                 if self.x_normalize[dataset_index] is not None:
-                    jacobian_matrix[label][i] -= \
-                        self._y_multiply[label] * THz * \
-                        rho[a, b]/self.y0[label] * self.j0[a, b]
+                    jacobian_matrix[label][i] -= (
+                        self._y_multiply[dataset_index][label] * THz
+                        * rho[a, b]/self.y0[dataset_index][label]
+                        * self.j0[dataset_index][a, b])
         self.y_fit.append(y_fit)
         self.jacobian_matrix.append(jacobian_matrix)
 

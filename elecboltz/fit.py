@@ -1,6 +1,7 @@
 from .bandstructure import BandStructure
 from .conductivity import Conductivity
 from .fermisurface import IsoEnergySurface
+from .elements import FiniteElements
 from .params import easy_params, _deep_update
 from .scatrate import build_scattering_function
 
@@ -386,8 +387,8 @@ class FullScatteringFitter:
             scat_full = scattering_rates
         else:
             scat_full = self.band.symmetry_projector.T @ scattering_rates
-        cond = Conductivity(
-            self.band, scattering_rate=scat_full, **self.params)
+        cond = Conductivity(self.band, scattering_rate=scat_full,
+                            **self.params)
         self.y_fit = []
         self.jacobian_matrix = []
         for i in range(len(self.x_data_sets)):
@@ -549,6 +550,15 @@ class FullScatteringFitter:
                 for b in range(jac.shape[1]):
                     jac[a, b] = cond.band.symmetry_projector @ jac_full[a, b]
         return jac
+
+    def get_feature_importance(self):
+        if self.band.symmetry is not None:
+            jac = np.array(self.jacobian_matrix @ self.band.symmetry_projector)
+        else:
+            jac = np.array(self.jacobian_matrix)
+        elements = FiniteElements(self.band, 0.0)
+        return np.linalg.norm(jac, axis=0) / (
+            angstrom**2 * elements.jacobian_sums.diagonal()/6)
 
 
 def _calc_gradient_operator(surface: IsoEnergySurface):
@@ -912,7 +922,7 @@ def fit_full_scattering(
             result = scipy.optimize.least_squares(
                 fitter.residual, jac=fitter.jacobian, x0=result.x,
                 bounds=bounds, x_scale='jac', callback=fitter.log, **kwargs)
-
+    result['importance'] = fitter.get_feature_importance()
     end_time = datetime.now()
     print(result.message)
     print("\n\n")
@@ -1260,11 +1270,8 @@ def _save_full_scattering_result(
     if fitter.band.symmetry is not None:
         result['scattering_rate_irreducible'] = result.x
         result['scattering_rate'] = fitter.band.symmetry_projector.T @ result.x
-        result['jacobian'] = (fitter.jacobian_matrix
-                              @ fitter.band.symmetry_projector)
     else:
         result['scattering_rate'] = result.x
-        result['jacobian'] = fitter.jacobian_matrix
     result.pop('x', None)
 
     result['iterations'] = result.pop('nit', None)
